@@ -63,6 +63,14 @@ FALLBACK = {
     "play": "▶", "pause": "⏸", "stop": "■", "add": "+", "delete": "✕", "up": "▲", "down": "▼",
     "eye": "◉", "eye_off": "○", "volume": "♪", "mute": "×", "prev": "◀", "next": "▶",
     "undo": "↶", "redo": "↷",
+    # icon chính (nav rail) — dùng emoji khi thiếu font Segoe Fluent (Linux/macOS)
+    "projects": "📁", "editor": "✏️", "queue": "☰", "providers": "🔌", "presets": "🎨",
+    "resources": "⬇️", "tools": "🧰", "settings": "⚙️",
+    "folder": "📁", "open": "📂", "save": "💾", "download": "⬇️", "export": "📤",
+    "mic": "🎙️", "translate": "🌐", "speaker": "🔊", "mix": "🎚️", "lock": "🔒",
+    "unlock": "🔓", "copy": "📋", "refresh": "🔄", "run": "▶", "split": "✂️",
+    "merge": "🔗", "cut": "✂️", "check": "✓", "warning": "⚠️", "error": "⛔",
+    "image": "🖼️", "text": "🔤", "blur": "🫥", "zoom_in": "🔍", "zoom_out": "🔍",
 }
 
 

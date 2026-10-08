@@ -744,8 +744,14 @@ class ProjectsPage(QtWidgets.QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
         self.model_bar = ModelBar(state)
+        self.model_bar.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum
+        )
         layout.addWidget(self.model_bar)
         self.queue_bar = QueueBar(state)
+        self.queue_bar.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum
+        )
         layout.addWidget(self.queue_bar)
         splitter = QtWidgets.QSplitter()
         self.list = ProjectList(state)
@@ -773,7 +779,7 @@ class ProjectsPage(QtWidgets.QWidget):
         right_layout.addWidget(self.placeholder, 1)
         splitter.addWidget(right)
         splitter.setSizes([280, 900])
-        layout.addWidget(splitter)
+        layout.addWidget(splitter, 1)
         state.projectOpened.connect(self._update)
         state.projectChanged.connect(self._update)
         self._update()
