@@ -12,15 +12,29 @@ def _temperature(profile) -> float:
         return 0.3
 
 
+# OpenCode Zen — gateway model free của OpenCode ($0/1M token, key lấy tại opencode.ai/auth)
+ZEN_BASE_URL = "https://opencode.ai/zen/v1"
+ZEN_FREE_MODELS = {
+    "big-pickle": "Big Pickle — model ẩn danh, 200K context, mạnh",
+    "mimo-v2.6-flash-free": "MiMo V2.6 Flash — 1M context, nhanh",
+    "space-bunny-free": "Space Bunny — zero-retention (không train dữ liệu)",
+    "longcat-2.5-preview-free": "LongCat 2.5 — zero-retention (không train dữ liệu)",
+}
+
+
 class OpenAICompatTranslator(LLMTranslator):
     default_model = "gpt-4o-mini"
+    default_base_url = ""  # trống = server OpenAI mặc định
+
+    def _base_url(self) -> str | None:
+        return self.profile.base_url or self.default_base_url or None
 
     def _call(self, system: str, prompt: str, key: str) -> str:
         import openai
 
         client = openai.OpenAI(
             api_key=key or "sk-no-key",
-            base_url=self.profile.base_url or None,
+            base_url=self._base_url(),
             timeout=300,
             max_retries=0,
         )
@@ -37,8 +51,15 @@ class OpenAICompatTranslator(LLMTranslator):
     def list_models(self) -> list[str]:
         import openai
 
-        client = openai.OpenAI(api_key=self.keys.current() or "sk-no-key", base_url=self.profile.base_url or None, timeout=30)
+        client = openai.OpenAI(api_key=self.keys.current() or "sk-no-key", base_url=self._base_url(), timeout=30)
         return sorted(model.id for model in client.models.list())
+
+
+class ZenTranslator(OpenAICompatTranslator):
+    """OpenCode Zen — cùng giao thức OpenAI, chỉ khác base URL mặc định (model free $0/1M token)."""
+
+    default_model = "big-pickle"
+    default_base_url = ZEN_BASE_URL
 
 
 class GeminiCompatTranslator(LLMTranslator):

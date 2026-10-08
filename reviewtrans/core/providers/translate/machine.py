@@ -8,10 +8,19 @@ import requests
 
 from ...context import apply_glossary_to_source
 from ...langs import google_code, microsoft_code
-from .. import ProviderError
+from .. import ProviderError, retry_delay
 from .base import TranslateJob, Translator
 
 MAX_CHARS = 4500
+
+# endpoint miễn phí bị giới hạn nghiêm ngặt hơn nhiều soo với API key
+GOOGLE_API_BASE = "https://translation.googleapis.com"
+GOOGLE_FREE_BASE = "https://translate.googleapis.com"
+GOOGLE_API_PATH = "/language/translate/v2"
+GOOGLE_FREE_PATH = "/translate_a/single"
+FREE_MAX_CHARS = 1800  # mỗi lần gọi endpoint web: cắt nhỏ để ít bị 429
+FREE_MAX_ITEMS = 25
+FREE_MIN_INTERVAL = 0.4  # giãn cách tối thiểu giữa hai lần gọi endpoint web
 
 
 def _chunks(lines: list[str], max_chars: int, max_items: int) -> list[list[int]]:
@@ -52,18 +61,29 @@ class MachineTranslator(Translator):
                 return func()
             except (requests.RequestException, ProviderError, ValueError, KeyError, IndexError) as exc:
                 last = exc
-                job.emit(f"  lỗi {type(exc).__name__}: {str(exc)[:200]} — thử lại ({attempt + 1}/4)")
-                time.sleep(1.5 * (attempt + 1))
+                delay = retry_delay(attempt, exc)
+                job.emit(f"  lỗi {type(exc).__name__}: {str(exc)[:200]} — thử lại sau {delay:.0f}s ({attempt + 1}/4)")
+                time.sleep(delay)
         raise ProviderError(f"{self.profile.name}: {last}")
 
     def _translate_many(self, texts: list[str], job: TranslateJob) -> list[str]:
         raise NotImplementedError
 
+    def _endpoint(self, default_base: str, path: str) -> str:
+        """Ghép Base URL của profile với path endpoint (Base URL đã chứa sẵn path thì dùng nguyên)."""
+        root = (self.profile.base_url or default_base).rstrip("/")
+        return root if root.endswith(path) else f"{root}{path}"
+
 
 class GoogleTranslator(MachineTranslator):
-    """Có API key → Cloud Translation v2 (chính xác từng dòng). Không có → endpoint web miễn phí."""
+    """Có API key → Cloud Translation v2 (chính xác từng dòng). Không có → endpoint web miễn phí.
 
+    Base URL để trống thì dùng endpoint của Google; điền Base URL thì đi qua proxy/mirror tự chọn.
+    """
     max_batch = 100
+
+    _free_lock = threading.Lock()
+    _free_last = 0.0
 
     def _translate_many(self, texts: list[str], job: TranslateJob) -> list[str]:
         key = self.keys.next()
@@ -74,30 +94,46 @@ class GoogleTranslator(MachineTranslator):
             if source and source != "auto":
                 payload["source"] = source
             response = requests.post(
-                "https://translation.googleapis.com/language/translate/v2",
+                self._endpoint(GOOGLE_API_BASE, GOOGLE_API_PATH),
                 params={"key": key},
                 json=payload,
                 timeout=60,
             )
             if response.status_code != 200:
-                raise ProviderError(response.text[:300])
+                raise ProviderError(f"Google {response.status_code}: {response.text[:300]}")
             return [item["translatedText"] for item in response.json()["data"]["translations"]]
-        joined = "\n".join(t.replace("\n", " ") for t in texts)
-        out = self._free(joined, source or "auto", target)
-        parts = out.split("\n")
-        if len(parts) == len(texts):
-            return [p.strip() for p in parts]
-        # lệch dòng → dịch từng dòng
-        return [self._free(t, source or "auto", target).strip() for t in texts]
+        out = [""] * len(texts)
+        # gọi theo lát nhỏ (FREE_MAX_*) thay vì gộp 4500 ký tự → giảm hẳn 429
+        for group in _chunks(texts, FREE_MAX_CHARS, FREE_MAX_ITEMS):
+            joined = "\n".join(texts[i].replace("\n", " ") for i in group)
+            parts = self._free(joined, source or "auto", target).split("\n")
+            if len(parts) == len(group):
+                for i, value in zip(group, parts):
+                    out[i] = value.strip()
+                continue
+            if len(group) == 1:  # Google tách một dòng thành nhiều đoạn → ghép lại
+                out[group[0]] = " ".join(part.strip() for part in parts if part.strip())
+                continue
+            for i in group:  # lệch dòng → dịch từng dòng
+                out[i] = self._free(texts[i], source or "auto", target).strip()
+        return out
 
-    @staticmethod
-    def _free(text: str, source: str, target: str) -> str:
+    def _free(self, text: str, source: str, target: str) -> str:
+        with GoogleTranslator._free_lock:  # chặn gọi ồ ạt → Google trả 429 ngay
+            wait = FREE_MIN_INTERVAL - (time.time() - GoogleTranslator._free_last)
+            if wait > 0:
+                time.sleep(wait)
+            GoogleTranslator._free_last = time.time()
         response = requests.post(
-            "https://translate.googleapis.com/translate_a/single",
+            self._endpoint(GOOGLE_FREE_BASE, GOOGLE_FREE_PATH),
             params={"client": "gtx", "sl": source, "tl": target, "dt": "t"},
             data={"q": text},
             timeout=60,
         )
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            hint = f", chờ {retry_after}s" if retry_after else ""
+            raise ProviderError(f"Google 429: bị giới hạn tần suất{hint} — thử lại sau")
         if response.status_code != 200:
             raise ProviderError(f"Google trả về {response.status_code}")
         data = response.json()

@@ -90,8 +90,21 @@ def run(
 
 
 def run_checked(command: list[str], what: str, **kwargs) -> None:
+    """Chạy lệnh, raise kèm output cuối — thay cho câu 'xem log' không nói gì."""
+    tail: list[str] = []
+    user_cb = kwargs.get("line_cb")
+
+    def _keep(line: str) -> None:
+        tail.append(line)
+        if len(tail) > 15:
+            tail.pop(0)
+        if user_cb is not None:
+            user_cb(line)
+
+    kwargs["line_cb"] = _keep
     if run(command, **kwargs) != 0:
-        raise RuntimeError(f"{what} thất bại (xem log).")
+        detail = "; ".join(part for part in (x.strip() for x in tail) if part)
+        raise RuntimeError(f"{what} thất bại: {detail[-400:]}" if detail else f"{what} thất bại (xem log).")
 
 
 def _quote(part: str) -> str:

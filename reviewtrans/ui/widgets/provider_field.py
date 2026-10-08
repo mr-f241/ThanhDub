@@ -22,6 +22,9 @@ from .common import ComboBox, error, tool_button
 # danh sách model/giọng lấy từ API, dùng chung: (kind, profile_id) -> [(id, nhãn)]
 _remote: dict[tuple[str, str], list[tuple[str, str]]] = {}
 
+# loại TTS nào lấy được danh sách giọng từ server
+VOICE_LIST_KINDS = ("edge", "openai_speech", "blaze")
+
 
 class _RemoteHub(QtCore.QObject):
     updated = QtCore.pyqtSignal(str, str)  # kind, profile_id
@@ -35,6 +38,127 @@ def remote_hub() -> _RemoteHub:
     if _hub is None:
         _hub = _RemoteHub()
     return _hub
+
+
+class PoolStrip(QtWidgets.QFrame):
+    """Dải trạng thái pool token Blaze: token nào đang chạy, còn quota, còn sống."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("PoolStrip")
+        self._timer = QtCore.QTimer(self, interval=3000, timeout=self.refresh)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(6)
+        self.summary = QtWidgets.QLabel("")
+        self.summary.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        layout.addWidget(self.summary, 1)
+        for text, slot, name in (
+            ("Xem token", self.show_tokens, "eye"),
+            ("Bật lại token chết", self.revive, "refresh"),
+            ("Xoá bộ đếm", self.clear_history, "delete"),
+        ):
+            layout.addWidget(tool_button(name, text, slot))
+
+    def attach(self, profile) -> None:
+        self._profile = profile
+        self._timer.start()
+        self.refresh()
+
+    def detach(self) -> None:
+        self._timer.stop()
+        self.summary.setText("")
+
+    def _pool(self):
+        profile = getattr(self, "_profile", None)
+        if profile is None or profile.kind != "blaze" or not profile.api_keys:
+            return None
+        from ...core.providers.tts.blaze import BlazeKeyPool
+
+        return BlazeKeyPool(list(profile.api_keys))
+
+    def refresh(self) -> None:
+        pool = self._pool()
+        if pool is None:
+            self.summary.setText("")
+            self.setVisible(False)
+            return
+        self.setVisible(True)
+        info = pool.summary()
+        self.summary.setText(
+            f"TOKEN {info['ready']}/{info['total']} sẵn sàng · "
+            f"{info['inflight']} đang chạy · {info['cooling']} nghỉ · {info['dead']} chết · "
+            f"mỗi token {info['limit_10m']} req/10 phút · {info['limit_hour']} req/giờ"
+        )
+
+    def _dialog(self) -> tuple[QtWidgets.QDialog, QtWidgets.QTableWidget] | None:
+        pool = self._pool()
+        if pool is None:
+            return None
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Pool token Blaze")
+        dialog.resize(820, 460)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        table = QtWidgets.QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(["Token", "Trạng thái", "10 phút", "1 giờ", "Đang chạy", "Lỗi"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        header = table.horizontalHeader()
+        for column in range(1, 6):
+            header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(table)
+        rows = pool.snapshot()
+        table.setRowCount(len(rows))
+        labels = {"ready": "sẵn sàng", "cooling": "đang nghỉ", "full": "hết quota",
+                  "dead": "chết (401)", "off": "đã tắt"}
+        for row, item in enumerate(rows):
+            cells = [
+                item["short"],
+                labels.get(item["state"], item["state"]) + (
+                    f" {item['cooldown']:.0f}s" if item["cooldown"] > 0 else ""
+                ),
+                f"{item['used_10m']}/{info_limit(pool, '10m')}",
+                f"{item['used_hour']}/{info_limit(pool, 'hour')}",
+                str(item["inflight"]),
+                item["last_error"][:60],
+            ]
+            for column, text in enumerate(cells):
+                table.setItem(row, column, QtWidgets.QTableWidgetItem(text))
+        button = QtWidgets.QPushButton("Đóng")
+        button.clicked.connect(dialog.accept)
+        layout.addWidget(button, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+        return dialog, table
+
+    def show_tokens(self) -> None:
+        built = self._dialog()
+        if built:
+            built[0].exec()
+
+    def revive(self) -> None:
+        pool = self._pool()
+        if pool is None:
+            return
+        count = pool.reset_dead()
+        self.refresh()
+        self.summary.setText(
+            f"Đã bật lại {count} token." if count else "Không có token chết nào."
+        )
+
+    def clear_history(self) -> None:
+        pool = self._pool()
+        if pool is None:
+            return
+        pool.clear_history()
+        self.refresh()
+        self.summary.setText("Đã xoá bộ đếm quota.")
+
+
+def info_limit(pool, window: str) -> int:
+    from ...core.providers.tts.blaze import LIMIT_PER_HOUR, LIMIT_PER_10M
+
+    return LIMIT_PER_10M if window == "10m" else LIMIT_PER_HOUR
 
 
 class ProviderField(QtWidgets.QWidget):
@@ -179,9 +303,9 @@ class ProviderField(QtWidgets.QWidget):
             self.value.set_items(items, keep=False)
             self.value.set_value(own_value)
             self.value.blockSignals(False)
-            self.fetch.setEnabled(profile is not None and profile.kind in ("edge", "openai_speech"))
+            self.fetch.setEnabled(profile is not None and profile.kind in VOICE_LIST_KINDS)
             # tự tải danh sách giọng một lần cho mỗi provider (lỗi cũng ghi nhận để không lặp lại)
-            if profile is not None and ("tts", profile.id) not in _remote and profile.kind in ("edge", "openai_speech"):
+            if profile is not None and ("tts", profile.id) not in _remote and profile.kind in VOICE_LIST_KINDS:
                 _remote[("tts", profile.id)] = []
                 QtCore.QTimer.singleShot(0, lambda: self.fetch_remote(silent=True))
 

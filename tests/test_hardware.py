@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from reviewtrans.core import hardware
-from reviewtrans.core.config import SettingsStore, upgrade_settings, whisper_thread_count
+from reviewtrans.core.config import SETTINGS_VERSION, SettingsStore, upgrade_settings, whisper_thread_count
 from reviewtrans.core.hardware import EncoderConfig, Gpu, HardwareInfo, quality_args, resolve_encoder, whisper_plan
 from reviewtrans.core.paths import find_tool
 from reviewtrans.core.pipeline import RunContext
@@ -68,10 +68,11 @@ def test_settings_upgrade_to_auto(home):
     s = store.settings
     s.render.video_codec, s.whisper_threads = "libx264", 4
     upgrade_settings(s, 1)
-    assert s.render.video_codec == "auto" and s.whisper_threads == 0 and s.settings_version == 2
+    assert s.render.video_codec == "auto" and s.whisper_threads == 0 and s.settings_version == SETTINGS_VERSION
     s.render.video_codec = "libx264"  # người dùng tự chọn lại CPU → giữ nguyên
     upgrade_settings(s, 2)
     assert s.render.video_codec == "libx264"
+    assert s.asr_engine in ("whisper", "moonshine")  # bản 2.2 thêm bộ nhận dạng Moonshine
     assert whisper_thread_count(0) >= 1 and whisper_thread_count(6) == 6
 
 
@@ -137,6 +138,30 @@ def test_asr_falls_back_to_cpu(tmp_path, home, monkeypatch):
     assert calls == [str(gpu), str(cpu)]
     assert any("Radeon RX 5300M" in line for line in logs)
     assert any("thử bản CPU" in line for line in logs)
+
+
+def test_asr_moonshine_picks_model_by_source_language(tmp_path, home, monkeypatch):
+    """Chưa chọn model Moonshine → phải theo ngôn ngữ nguồn, không dùng bản tiếng Anh.
+
+    Đây là bug thật đã gặp: project nguồn `zh` nhưng model rơi về `moonshine-base` (en),
+    model nghe không ra tiếng nên lặp rác thay vì im lặng.
+    """
+    ctx, logs = _ctx(tmp_path)
+    ctx.project.source_language = "zh"
+    doc = ctx.store.add_video(ctx.project, str(tmp_path / "a.mp4"), MediaInfo(duration=5.0, has_audio=True))
+    doc.asr_engine = "moonshine"
+    monkeypatch.setattr(asr_mod, "extract_audio", lambda *a: tmp_path / "audio.wav")
+    seen: list[str] = []
+    monkeypatch.setattr(asr_mod, "run_moonshine", lambda ctx, audio, model: seen.append(model) or [])
+
+    asr_mod.run_asr(ctx, doc)
+    assert seen == ["moonshine-ai/moonshine-base-zh"]
+
+    # chọn tay ở cấp video thì phải thắng, kể cả khi sai ngôn ngữ
+    doc.moonshine_model = "moonshine-ai/moonshine-tiny-en"
+    asr_mod.run_asr(ctx, doc)
+    assert seen[-1] == "moonshine-ai/moonshine-tiny-en"
+    assert not any("base-zh" in line for line in logs[1:])
 
 
 def _video(ctx, tmp_path):

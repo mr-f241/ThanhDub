@@ -14,6 +14,7 @@ from .common import (
     SpinBox,
     form_layout,
     hint,
+    push_button,
     tool_button,
 )
 
@@ -26,6 +27,7 @@ class LayerPanel(QtWidgets.QWidget):
     layerChanged = QtCore.pyqtSignal(str)  # sửa thuộc tính
     layerSelected = QtCore.pyqtSignal(str)
     currentTimeRequested = QtCore.pyqtSignal()
+    fitTextRequested = QtCore.pyqtSignal(str)  # yêu cầu dò chữ gốc để căn vùng che (layer_id)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +59,12 @@ class LayerPanel(QtWidgets.QWidget):
         tools.addWidget(tool_button("down", "Đưa xuống dưới", lambda: self.move(-1)))
         tools.addWidget(tool_button("copy", "Nhân bản", self.duplicate))
         tools.addWidget(tool_button("delete", "Xoá layer", self.delete))
+        self.fit_button = push_button("Khớp chữ gốc", self._fit_text, "check")
+        self.fit_button.setToolTip(
+            "Dò vị trí chữ cứng trong khung hình tại thời điểm đang phát rồi co vùng che vừa khớp\n"
+            "(hạn chế che lố khi phụ đề gốc ngắn). Muốn khớp nhiều đoạn: tạo nhiều vùng che với thời gian khác nhau."
+        )
+        tools.addWidget(self.fit_button)
         tools.addStretch()
         layout.addLayout(tools)
 
@@ -283,6 +291,11 @@ class LayerPanel(QtWidgets.QWidget):
         self.layersChanged.emit()
         self.layerSelected.emit(layer.id)
 
+    def _fit_text(self) -> None:
+        layer_id = self.current_id()
+        if layer_id:
+            self.fitTextRequested.emit(layer_id)
+
     def move(self, direction: int) -> None:
         layer = self.layer(self.current_id())
         if not layer or not self.doc:
@@ -333,6 +346,7 @@ class LayerPanel(QtWidgets.QWidget):
         self.props.setVisible(layer is not None)
         if layer is None:
             return
+        self.fit_button.setVisible(layer.type == LAYER_BLUR)
         self._loading = True
         self.name.setText(layer.name)
         self.start.setValue(layer.start)

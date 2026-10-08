@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-# code nội bộ -> (tên hiển thị, tên tiếng Anh cho LLM, Google, Microsoft, Whisper)
-LANGUAGES: dict[str, tuple[str, str, str, str, str]] = {
-    "auto": ("Tự nhận diện", "the source language", "auto", "", "auto"),
-    "zh": ("Tiếng Trung (giản thể)", "Simplified Chinese", "zh-CN", "zh-Hans", "zh"),
-    "zh-tw": ("Tiếng Trung (phồn thể)", "Traditional Chinese", "zh-TW", "zh-Hant", "zh"),
-    "vi": ("Tiếng Việt", "Vietnamese", "vi", "vi", "vi"),
-    "en": ("Tiếng Anh", "English", "en", "en", "en"),
-    "ja": ("Tiếng Nhật", "Japanese", "ja", "ja", "ja"),
-    "ko": ("Tiếng Hàn", "Korean", "ko", "ko", "ko"),
-    "th": ("Tiếng Thái", "Thai", "th", "th", "th"),
-    "id": ("Tiếng Indonesia", "Indonesian", "id", "id", "id"),
-    "fr": ("Tiếng Pháp", "French", "fr", "fr", "fr"),
-    "de": ("Tiếng Đức", "German", "de", "de", "de"),
-    "es": ("Tiếng Tây Ban Nha", "Spanish", "es", "es", "es"),
-    "ru": ("Tiếng Nga", "Russian", "ru", "ru", "ru"),
-    "pt": ("Tiếng Bồ Đào Nha", "Portuguese", "pt", "pt", "pt"),
-    "hi": ("Tiếng Hindi", "Hindi", "hi", "hi", "hi"),
+# code nội bộ -> (tên hiển thị, tên tiếng Anh cho LLM, Google, Microsoft, Whisper, Riva)
+LANGUAGES: dict[str, tuple[str, str, str, str, str, str]] = {
+    "auto": ("Tự nhận diện", "the source language", "auto", "", "auto", ""),
+    "zh": ("Tiếng Trung (giản thể)", "Simplified Chinese", "zh-CN", "zh-Hans", "zh", "zh-CN"),
+    "zh-tw": ("Tiếng Trung (phồn thể)", "Traditional Chinese", "zh-TW", "zh-Hant", "zh", "zh-TW"),
+    "vi": ("Tiếng Việt", "Vietnamese", "vi", "vi", "vi", "vi"),
+    "en": ("Tiếng Anh", "English", "en", "en", "en", "en"),
+    "ja": ("Tiếng Nhật", "Japanese", "ja", "ja", "ja", "ja"),
+    "ko": ("Tiếng Hàn", "Korean", "ko", "ko", "ko", "ko"),
+    "th": ("Tiếng Thái", "Thai", "th", "th", "th", "th"),
+    "id": ("Tiếng Indonesia", "Indonesian", "id", "id", "id", "id"),
+    "fr": ("Tiếng Pháp", "French", "fr", "fr", "fr", "fr"),
+    "de": ("Tiếng Đức", "German", "de", "de", "de", "de"),
+    "es": ("Tiếng Tây Ban Nha", "Spanish", "es", "es", "es", "es-ES"),
+    "ru": ("Tiếng Nga", "Russian", "ru", "ru", "ru", "ru"),
+    "pt": ("Tiếng Bồ Đào Nha", "Portuguese", "pt", "pt", "pt", "pt-BR"),
+    "hi": ("Tiếng Hindi", "Hindi", "hi", "hi", "hi", "hi"),
 }
 
 SOURCE_LANGUAGES = list(LANGUAGES.keys())
@@ -45,3 +45,8 @@ def microsoft_code(code: str) -> str:
 def whisper_code(code: str) -> str:
     entry = LANGUAGES.get(code)
     return entry[4] if entry else code
+
+
+def riva_code(code: str) -> str:
+    entry = LANGUAGES.get(code)
+    return entry[5] if entry else ""

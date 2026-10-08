@@ -1,6 +1,6 @@
-# Hướng dẫn sử dụng ReviewTrans Studio
+# Hướng dẫn sử dụng ThanhDub
 
-ReviewTrans Studio dịch, lồng tiếng và chèn phụ đề tự động cho video review phim / video thuyết minh.
+ThanhDub dịch, lồng tiếng và chèn phụ đề tự động cho video review phim / video thuyết minh.
 Tài liệu này đi qua toàn bộ tính năng, ảnh minh hoạ lấy từ project mẫu **bomnguyentu** (video giải thích bom
 nguyên tử, tiếng Trung → tiếng Việt, 375 câu).
 
@@ -30,8 +30,8 @@ Có hai bản, tải ở mục **Releases** của repo:
 
 | Bản | Cách dùng |
 |---|---|
-| `ReviewTrans-x.y.z-setup.exe` | Chạy file và bấm Next. Không cần quyền admin; app được cài vào `%LOCALAPPDATA%\Programs\ReviewTrans`, có shortcut ở Start Menu. Cài bản mới đè lên bản cũ, cài đặt và project được giữ nguyên. |
-| `ReviewTrans-x.y.z-portable.zip` | Giải nén ra đâu cũng được, chạy `ReviewTrans.exe`. Mọi dữ liệu (cài đặt, project, model) nằm trong thư mục `data\` cạnh exe, nên mang cả thư mục sang máy khác vẫn dùng được. |
+| `ThanhDub-x.y.z-setup.exe` | Chạy file và bấm Next. Không cần quyền admin; app được cài vào `%LOCALAPPDATA%\Programs\ThanhDub`, có shortcut ở Start Menu. Cài bản mới đè lên bản cũ, cài đặt và project được giữ nguyên. |
+| `ThanhDub-x.y.z-portable.zip` | Giải nén ra đâu cũng được, chạy `ThanhDub.exe`. Mọi dữ liệu (cài đặt, project, model) nằm trong thư mục `data\` cạnh exe, nên mang cả thư mục sang máy khác vẫn dùng được. |
 
 Chạy từ mã nguồn:
 
@@ -67,17 +67,51 @@ tạo nhiều profile cùng loại (ví dụ hai server kiểu OpenAI khác nhau
 
 | Loại | Ghi chú |
 |---|---|
-| Google Translate | Không cần key (endpoint web miễn phí). Có key Google Cloud thì dùng Cloud Translation v2, ổn định hơn. |
+| Google Translate | Không cần key (endpoint web `translate.googleapis.com/translate_a/single`). Có key Google Cloud thì dùng Cloud Translation v2 (`translation.googleapis.com`), ổn định hơn. |
 | Microsoft Translator | Không cần key (token miễn phí của Edge). Có key Azure thì điền key và Region. |
-| API kiểu OpenAI | OpenAI, DeepSeek, OpenRouter, Groq, LM Studio, Ollama… Điền **Base URL** (thường kết thúc bằng `/v1`), key và model. |
+| NVIDIA NIM (Riva NMT) | Dịch máy chuyên dụng của NVIDIA (riva-translate-1.6b, 36 ngôn ngữ, có cặp Trung→Việt trực tiếp). Điền key `nvapi-…` lấy tại build.nvidia.com. Rất nhanh, không bị chặn theo IP như Google free. |
+| Deep Translator (nhiều engine) | Bọc thư viện `deep-translator`, chọn engine ở ô **Tuỳ chọn → Engine**: `google`/`mymemory` (miễn phí, không cần key), `libre`/`deepl`/`microsoft`/`yandex` (cần key), `papago` (key dạng `client_id:secret`), `baidu` (key dạng `appid:appkey`). `deepl` không có tiếng Việt → báo ngay khi chọn. |
+| API kiểu OpenAI | OpenAI, DeepSeek, OpenRouter, Groq, LM Studio, Ollama… Điền **Base URL** (thường kết thúc bằng `/v1`), key và model. Cũng dùng cho **NVIDIA NIM** (`https://integrate.api.nvidia.com/v1`, key `nvapi-…`, ví dụ model `google/diffusiongemma-26b-a4b-it`). |
+| OpenCode Zen (model free) | `big-pickle`, `mimo-v2.6-flash-free`, `space-bunny-free`… giá **$0/1M token**, chỉ cần key tại opencode.ai/auth. Xem mục [Model free của OpenCode Zen](#model-free-của-opencode-zen-big-pickle-mimo-v26). |
 | API kiểu Gemini | Google AI Studio hoặc proxy tương thích. |
 | Anthropic (Claude) | Để trống Base URL để dùng API chính thức. |
 
 - **API key**: mỗi dòng một key. App tự xoay vòng giữa các key khi bị giới hạn quota.
+- **Bị lỗi 429 (giới hạn tần suất)?** App đã tự chia nhỏ lô, giãn nhịp gọi và chờ lâu hơn rồi thử lại;
+  nếu vẫn 429 thì đổi sang **Microsoft Translator** (miễn phí, hiếm bị chặn hơn), dùng key Google Cloud
+  (Cloud Translation v2 có quota riêng), hoặc điền **Base URL** của proxy/mirror vào ô Base URL
+  (để trống là dùng thẳng Google; endpoint điền vào sẽ cộng thêm `/translate_a/single` hoặc `/language/translate/v2`
+  tuỳ có key hay không — đã chứa sẵn path thì app dùng nguyên).
 - **Tải danh sách model**: lấy danh sách model từ server rồi chọn, không phải gõ tay.
 - **Kiểm tra kết nối**: dịch thử “你好，世界” để xác nhận cấu hình đúng.
 - Chỉ các provider LLM (OpenAI/Gemini/Anthropic) mới **dùng ngữ cảnh chung** và **tự cập nhật ngữ cảnh**.
   Google/Microsoft chỉ áp glossary bằng cách thay thuật ngữ trực tiếp vào câu gốc.
+
+### Model free của OpenCode Zen (Big Pickle, MiMo V2.6…)
+
+OpenCode Zen là gateway model của OpenCode; vài model đang **free $0/1M token** trong giai đoạn thử.
+
+1. Ở **Providers → Dịch**, mở ô **Loại** và chọn **OpenCode Zen (model free)** — hoặc bấm nút
+   **Model free (Zen)** bên danh sách profile để thêm nhanh: app tự điền
+   `Base URL = https://opencode.ai/zen/v1`, ô **Model** ra danh sách model free và **đặt làm mặc định** ngay.
+2. Dán **key Zen** lấy tại [opencode.ai/auth](https://opencode.ai/auth) vào ô **API key** — model free
+   không tính tiền nhưng vẫn bắt buộc key.
+3. Bấm **Kiểm tra kết nối** rồi dịch thử một lô nhỏ.
+
+| Model | Ghi chú |
+|---|---|
+| `big-pickle` | Model ẩn danh (dân tình đoán là GLM-4.6), 200K context, mạnh cho code lẫn hành văn. |
+| `mimo-v2.6-flash-free` | Xiaomi MiMo V2.6 Flash — 1M context, multimodal, trả lời nhanh. |
+| `space-bunny-free`, `longcat-2.5-preview-free` | Free và **zero-retention**: dữ liệu không bị dùng để train. |
+
+Ghi chú:
+
+- Gõ tay `https://opencode.ai/zen/v1` vào ô **Base URL** thì ô **Model** tự chuyển sang danh sách model free.
+- Gọi từ ngoài OpenCode vẫn cần key (thiếu key thì endpoint trả `403 FreeTierError`).
+- `big-pickle` và `mimo-v2.6-flash-free`: trong giai đoạn free, prompt **có thể được dùng để cải thiện model**
+  — đừng gửi dữ liệu nhạy cảm qua hai con này.
+- Trên **màn hình chính** có dải **“Model dịch: …”** cho biết đang dùng model nào; thiếu key thì hiện cảnh
+  báo đỏ, bấm **Đổi model** là nhảy sang trang Providers.
 
 ![Providers — lồng tiếng](images/15-providers-tts.png)
 
@@ -85,6 +119,7 @@ tạo nhiều profile cùng loại (ví dụ hai server kiểu OpenAI khác nhau
 
 | Loại | Ghi chú |
 |---|---|
+| Blaze TTS (`api.blaze.vn`) | Dán **mỗi dòng một token** vào ô API key — app tự xoay vòng. Bấm **Chọn giọng…** để mở kho giọng và nghe thử trước khi dùng. Chi tiết ở mục [Dùng Blaze TTS](#dùng-blaze-tts-pool-token-xoay-vòng). |
 | Edge TTS | Miễn phí, không cần key. Ví dụ giọng: `vi-VN-HoaiMyNeural`, `vi-VN-NamMinhNeural`. |
 | vBee | Điền token vào ô API key, App ID ở phần Tuỳ chọn. |
 | API kiểu OpenAI (`/v1/audio/speech`) | OpenAI hoặc server TTS tự host. App tự đọc danh sách giọng (`GET /v1/voices`) và model (`GET /v1/models`) nếu server có. Bấm **Chọn giọng…** để chọn. |
@@ -95,6 +130,31 @@ Mục **Tuỳ chọn** của TTS:
 - **Định dạng**: nên để `wav`.
 - **Số luồng**: số câu được tạo song song. Server yếu thì để 1.
 - **Chỉ dẫn giọng đọc**: dùng cho model `gpt-4o-mini-tts`.
+- **Giãn cách giữa các lượt (giây)** (Edge): chặn gửi dồn dập một lúc — gửi quá dày thì Microsoft trả 429.
+  Mặc định `0.2`, nếu hay bị lỗi thì tăng lên `0.5`.
+
+Mỗi câu được tạo lồng tiếng thử tối đa 3 lần; bị 429/giới hạn quota thì app tự chờ (khoảng 5–60 giây) rồi thử lại
+thay vì báo lỗi ngay. Log từng câu nằm ở trang Hàng đợi.
+
+### Dùng Blaze TTS (pool token xoay vòng)
+
+1. Ở trang **Providers → Lồng tiếng**, bấm **Thêm**, chọn loại **Blaze TTS**.
+2. Dán token vào ô **API key**, **mỗi dòng một token** — app tự xoay vòng và chia tải:
+   - mỗi token có **100 request / 10 phút** và **600 request / giờ**, tối đa 20 request đồng thời;
+   - token hết hạn mức sẽ tự nghỉ đến hết cửa sổ, không làm dừng cả project;
+   - token trả **401** bị đánh dấu chết và app chuyển sang token khác ngay;
+   - số liệu đã dùng được lưu xuống `blaze_pool.json` nên đóng app rồi mở lại vẫn nhớ.
+3. Bấm **Kiểm tra kết nối** để xác nhận còn token sống.
+4. Bấm **Chọn giọng…** để mở kho giọng: lọc theo tên/mã/tỉnh, bấm **Nghe thử** để nghe trước khi chốt.
+   Danh sách giọng cache 12 giờ, mẫu nghe thử cache trên đĩa — nghe lại không tốn quota.
+5. Thanh dưới form báo số token sẵn sàng / đang nghỉ / chết. Bấm vào đó để xem chi tiết từng token
+   (đã dùng bao nhiêu trong 10 phút và 1 giờ, lỗi gần nhất) và có nút bật lại token chết.
+
+Trong tab **Lồng tiếng** của Editor, chọn một câu rồi bấm **Chọn giọng…** hoặc **Nghe thử giọng** để đổi/nghe
+riêng giọng của câu đó mà không đụng cả project.
+
+Audio trả về từ Blaze nhỏ hơn bình thường nên app tự chuẩn hoá về −14 LUFS sau khi tạo (tắt bằng
+Tuỳ chọn **Nâng âm lượng = off** nếu muốn giữ nguyên).
 
 ## 4. Project và video
 
@@ -103,7 +163,7 @@ dùng chung ngữ cảnh dịch.
 
 ![Danh sách video của project](images/01-project-videos.png)
 
-- **Tạo mới**: đặt tên project. Thư mục project được tạo trong `%USERPROFILE%\ReviewTrans Projects`
+- **Tạo mới**: đặt tên project. Thư mục project được tạo trong `%USERPROFILE%\ThanhDub Projects`
   (bản portable: `data\projects`; đổi được ở Cài đặt).
 - **Mở…**: mở một thư mục project có sẵn, ví dụ project được chép từ máy khác.
 - **Thêm video…** hoặc **kéo thả file video** vào bảng. Video được sắp xếp theo tên tự nhiên (Tập 2 đứng trước Tập 10).
@@ -296,10 +356,11 @@ Cách chỉnh:
 **Video**
 
 - Tên video, file nguồn (đổi được nếu file bị di chuyển).
-- *Lấy câu thoại*: **Whisper** (nhận dạng giọng nói) hoặc **file SRT có sẵn**.
-- Ngôn ngữ gốc, model Whisper riêng cho video.
+- **Lấy câu thoại**: **Whisper** hoặc **Moonshine** (xem mục 11), hoặc **file SRT có sẵn**.
+- Ngôn ngữ gốc, model Whisper / model Moonshine riêng cho video.
 - **Lật ngang video** (giảm khả năng bị quét trùng nội dung).
-- Mở file hoặc thư mục đã xuất, **Xuất SRT…** (bản dịch hoặc câu gốc).
+- Mở file hoặc thư mục đã xuất, **Xuất SRT…** (bản dịch hoặc câu gốc),
+  **Nhập SRT đã dịch…** (xem mục 8, dùng khi dịch ở ngoài app).
 
 **Provider**: provider dịch + model và provider TTS + giọng **riêng cho video này**. Chọn “Theo project (…)” để
 kế thừa. Đổi provider hoặc giọng TTS thì các câu chuyển sang trạng thái `cũ` ở cột TTS, cần lồng tiếng lại.
@@ -310,6 +371,11 @@ kế thừa. Đổi provider hoặc giọng TTS thì các câu chuyển sang tr�
 2. **Nhận dạng**: Whisper tạo câu thoại từ âm thanh. Nếu đã có phụ đề, chọn *Dùng file SRT có sẵn* ở tab Video
    rồi bấm Nhận dạng để nạp file.
 3. **Dịch** (tự cập nhật ngữ cảnh ngay sau đó): xem lại bảng câu, sửa những câu dịch chưa hay, khoá câu đã ưng ý.
+   - *Không muốn chờ dịch*: bấm **Xuất SRT…** (chọn Yes để xuất bản dịch, No để xuất câu gốc) → mở file bằng
+     Google Dịch / tool dịch của bạn → bấm **Nhập SRT đã dịch…** ở ngay bên cạnh, chọn Yes để điền vào **bản dịch**
+     (No = điền vào **câu gốc**). App ghép theo mốc giờ; nếu file lệch giờ mà vẫn đủ số dòng thì hỏi ghép theo
+     thứ tự dòng. Bước Dịch được đánh dấu xong, các câu có sẵn bản dịch được giữ nguyên khi chạy lại dịch
+     (tích **Chỉ phần còn thiếu**).
 4. **Lồng tiếng**: xem cột TTS; câu `nhanh` thì rút gọn bản dịch rồi bấm *Lồng tiếng lại* cho câu đó.
 5. Chỉnh **phụ đề, layer, âm thanh**; nghe thử bằng chế độ *Nghe: bản trộn*; *Xuất thử 15 giây* để kiểm tra.
 6. **Xuất video**: file `.mp4` và `.srt` nằm trong thư mục `output` của project.
@@ -348,6 +414,14 @@ xem trước ở giữa. Áp preset trong Editor ở tab Phụ đề.
   - Tải xong, app tự dùng GPU cho bước Nhận dạng. Nếu bản GPU lỗi (driver cũ, thiếu VRAM…), app tự chạy lại bằng CPU.
 - **Model Whisper**: *Lấy danh sách đầy đủ* từ Hugging Face, chọn rồi *Tải model đã chọn*.
   Model càng lớn càng chính xác nhưng càng chậm; bản `-q5` nhẹ hơn.
+- **Moonshine (bộ nhận dạng thay thế)**: model nhỏ hơn whisper.cpp nhiều lần, chạy nhanh trên máy yếu,
+  ngôn ngữ nằm sẵn trong model. Muốn dùng thì:
+  1. Bấm **Cài torch + transformers** (cần mạng, ~200 MB, cài vào môi trường của app).
+  2. Chọn model theo ngôn ngữ nguồn rồi bấm **Tải model Moonshine đã chọn** (~40–130 MB).
+  3. Chọn bộ nhận dạng ở **Cài đặt → Bộ nhận dạng**, hoặc trong **Cấu hình project** / tab Video của từng video.
+  Hạn chế: chỉ có model cho 7 ngôn ngữ (Anh, Trung, Việt, Nhật, Hàn, Ả Rập, Ukraine) và ít chính xác hơn
+  whisper `medium` trở lên với âm thanh ồn.
+- **Tải dở bị đứt mạng**: cứ bấm tải lại — app nối tiếp phần đã tải (không tải lại từ đầu) và tự thử tới 5 lần.
 - **Lưu trữ**: xem dung lượng cache của project, **dọn cache** (giữ lại file lồng tiếng từng câu), mở thư mục dữ liệu
   và **thư mục font**. Font chép vào thư mục font dùng được cho cả khung phát lẫn video xuất (khởi động lại app để khung phát nhận font mới).
 
@@ -365,8 +439,10 @@ Video khác định dạng thì tích **Mã hoá lại**.
 
 - Thư mục chứa project, ngôn ngữ mặc định.
 - **Player**: tự động (libmpv nếu có), libmpv hoặc Qt. Đổi xong cần khởi động lại.
-- Model Whisper mặc định, **Whisper chạy trên** (Tự động / CUDA / Vulkan / Chỉ CPU), số luồng CPU của Whisper
-  (*Tự động* = theo số nhân CPU), **số câu mỗi lần dịch** (giảm nếu LLM hay trả thiếu dòng), số luồng TTS song song.
+- **Bộ nhận dạng**: chọn `whisper.cpp` (mặc định) hoặc `Moonshine` cho mọi video chưa set riêng, kèm **Model Whisper
+  mặc định**, **Model Moonshine mặc định** (ô gợi ý tự đổi theo ngôn ngữ gốc), **Whisper chạy trên**
+  (Tự động / CUDA / Vulkan / Chỉ CPU), số luồng CPU của Whisper, **số câu mỗi lần dịch**
+  (giảm nếu LLM hay trả thiếu dòng), số luồng TTS song song.
 - **Xuất video**:
   - Codec: mặc định **Tự động H.264**, tức dùng bộ mã hoá GPU nếu máy có, không thì dùng CPU (x264). Có thể chọn cụ thể:
     NVIDIA NVENC, AMD AMF, Intel Quick Sync, Windows Media Foundation (mọi GPU), hoặc x264/x265 bằng CPU.
@@ -403,6 +479,31 @@ Server TTS không có giọng đó. Vào Providers → profile TTS → **Chọn 
 
 **Dịch bị thiếu hoặc lệch dòng?**
 App tự thử lại và chia nhỏ batch. Nếu vẫn lỗi, giảm *Số câu mỗi lần dịch* trong Cài đặt, hoặc đổi sang model tốt hơn.
+
+**Tên nhân vật bị dịch kiểu `Xiao Trường` (trộn pinyin)?**
+App đã gắn quy tắc tên riêng vào prompt: với tiếng Việt, **mỗi chữ Hán đọc theo âm Hán Việt rồi ghép lại**
+(萧长 → *Tiêu Trường*, 林凡 → *Lâm Phàm*), không trộn pinyin, không dịch nghĩa; tên có sẵn trong ngữ cảnh
+được ưu tiên tuyệt đối. Bản cũ đã lưu thì sửa tay: **Project → Ngữ cảnh → Nhân vật**, sửa ô *Dịch là*,
+đánh dấu **Khóa** để LLM không ghi đè, rồi chạy lại bước Cập nhật ngữ cảnh / Dịch.
+
+**Câu dài bị kéo choạc, hoặc dịch ra lặp đi lặp lại (`…, hắn liền cười, một chút, hắn liền cười…`)?**
+Prompt giờ có quy tắc *câu gốc dài thì phải rút gọn* (bỏ từ, không bỏ sự kiện, giữ vừa thời lượng audio).
+Ngoài ra sau mỗi lô app tự soát: câu nào bị **chết loop** hoặc **dài hơn 6 lần câu gốc** thì hỏi lại đúng
+các câu đó một lượt (dòng log `N câu bị lặp vòng hoặc dài lố — dịch lại cho gọn`), chỉ nhận bản gọn hơn.
+Vẫn còn câu xấu → giảm *Số câu mỗi lần dịch* xuống 8–15: lô càng lớn model càng cắt xén và dễ chết loop.
+
+**Dịch báo `Google 429` (bị giới hạn tần suất)?**
+Endpoint miễn phí của Google chặn khi gửi liên tục. App đã tự giãn nhịp, chia lô nhỏ và chờ 5–60 giây rồi thử lại;
+nếu vẫn 429 thì (1) đổi sang **NVIDIA NIM (Riva NMT)** hoặc **Microsoft Translator** ở trang Providers,
+(2) điền key Google Cloud vào ô API key (Cloud Translation v2 có quota riêng), (3) điền **Base URL** của
+proxy/mirror bạn có, hoặc (4) bỏ qua bước Dịch: **Xuất SRT…** → dịch ở ngoài → **Nhập SRT đã dịch…**.
+
+**TTS hay bị lỗi 429 / `too many requests`?**
+Giảm *Số luồng* hoặc tăng *Giãn cách giữa các lượt* ở Tuỳ chọn của profile TTS; app cũng tự chờ rồi thử lại 3 lần.
+
+**Nhận dạng quá chậm / máy yếu?**
+Thử bộ nhận dạng **Moonshine**: Tài nguyên → *Cài torch + transformers* → *Tải model Moonshine đã chọn*,
+rồi chọn ở Cài đặt → Bộ nhận dạng. Muốn chính xác hơn thì giữ whisper.cpp và dùng model `medium` trở lên.
 
 **Chỉnh âm lượng gốc nhưng nghe vẫn như cũ?**
 Kiểm tra chế độ đang là *Nghe: bản trộn*, và đợi dòng “đang trộn lại bản nghe thử…” dưới player biến mất.

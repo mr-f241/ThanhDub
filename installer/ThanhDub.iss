@@ -1,35 +1,35 @@
-; Installer Inno Setup 6 cho ReviewTrans Studio — thường được gọi qua scripts/build.py:
-;   ISCC /DAppVersion=2.1.0 /DSourceDir=<dist\ReviewTrans> /DOutputDir=<release> installer\ReviewTrans.iss
+; Installer Inno Setup 6 cho ThanhDub — thường được gọi qua scripts/build.py:
+;   ISCC /DAppVersion=2.2.0 /DSourceDir=<dist\ThanhDub> /DOutputDir=<release> installer\ThanhDub.iss
 
 #ifndef AppVersion
-  #define AppVersion "2.1.0"
+  #define AppVersion "2.2.0"
 #endif
 #ifndef SourceDir
-  #define SourceDir "..\dist\ReviewTrans"
+  #define SourceDir "..\dist\ThanhDub"
 #endif
 #ifndef OutputDir
   #define OutputDir "..\release"
 #endif
 
-#define AppName "ReviewTrans Studio"
-#define AppExe "ReviewTrans.exe"
+#define AppName "ThanhDub"
+#define AppExe "ThanhDub.exe"
 
 [Setup]
 AppId={{8F3C1B2A-5D7E-4C9A-9B1E-2A6F0D4C7E11}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher=dominhhieu1405
-AppPublisherURL=https://github.com/dominhhieu1405/ReviewTrans
-AppSupportURL=https://github.com/dominhhieu1405/ReviewTrans/issues
+AppPublisher=Trần Thành
+AppPublisherURL=https://github.com/mr-f241/ThanhDub
+AppSupportURL=https://github.com/mr-f241/ThanhDub/issues
 ; Cài cho riêng người dùng, không cần quyền admin; app ghi được vào thư mục cài đặt
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-DefaultDirName={localappdata}\Programs\ReviewTrans
+DefaultDirName={localappdata}\Programs\ThanhDub
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=ReviewTrans-{#AppVersion}-setup
+OutputBaseFilename=ThanhDub-{#AppVersion}-setup
 SetupIconFile=..\icon.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}

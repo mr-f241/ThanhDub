@@ -8,7 +8,7 @@ from pathlib import Path
 from ..config import ProviderProfile
 from ..models import ProjectContext, Segment, VideoDoc
 from ..proc import StopRequested, probe, require_tool, run
-from ..providers import ProviderError
+from ..providers import FatalProviderError, NoAudioError, ProviderError, retry_delay
 from ..providers.tts import TTSProvider, create_tts
 from ..resolve import Resolved, resolve
 from . import RunContext
@@ -111,8 +111,19 @@ def run_tts(
                 return seg, target.name, probe(target).duration, key
             except StopRequested:
                 raise
+            except FatalProviderError:  # text không đọc được / cấu hình sai — thử lại cũng vậy
+                raise
             except Exception as exc:  # noqa: BLE001
                 last = exc
+                if attempt < 2:
+                    delay = retry_delay(attempt, exc)
+                    # Edge trả audio rỗng cả khi bị Microsoft limit tạm — đo thực tế: nghỉ ~20s mới qua,
+                    # chờ 2-3s như retry_delay thì cả3 lần đều chết
+                    if isinstance(exc, NoAudioError) or "no audio" in str(exc).lower():
+                        delay = max(delay, 20.0 * (attempt + 1))
+                    ctx.log(f"  TTS câu #{seg.id} lỗi, chờ {delay:.0f}s rồi thử lại ({attempt + 1}/3): {str(exc)[:160]}")
+                    if ctx.stop_event.wait(delay):
+                        raise StopRequested()
         raise ProviderError(f"câu #{seg.id}: {last}")
 
     concurrency = max(1, int(profile.option("concurrency", ctx.settings.tts_concurrency)))

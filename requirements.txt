@@ -1,8 +1,10 @@
 PyQt6>=6.6
 requests
+nvidia-riva-client
 edge-tts
 openai
 google-genai
 anthropic
+deep-translator
 python-mpv
 py7zr

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 from pathlib import Path
@@ -9,9 +10,13 @@ import requests
 
 from ...config import ProviderProfile
 from ...proc import StopRequested
-from .. import KeyRing, ProviderError
+from .. import FatalProviderError, KeyRing, NoAudioError, ProviderError
+from .blaze import BlazeTTS
 
 OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"]
+
+# ký tự mà giọng đọc Latin (vi/en/…) phát âm được — toàn chữ khác thì Edge trả audio rỗng
+_LATIN_TEXT = re.compile(r"[0-9A-Za-zÀ-ỹ]")
 
 
 class TTSProvider:
@@ -54,20 +59,52 @@ def _download(url: str, target: Path) -> Path:
 class EdgeTTS(TTSProvider):
     default_voice = "vi-VN-HoaiMyNeural"
     _voices_cache: list[dict] | None = None
+    _gate_lock = threading.Lock()
+    _gate_last = 0.0
+
+    def _gate(self) -> None:
+        """Chặn gọi ồ ạt — Edge TTS trả 429 ngay khi bắn nhiều request cùng lúc."""
+        try:
+            interval = float(self.profile.option("throttle", 0.2))
+        except (TypeError, ValueError):
+            interval = 0.2
+        if interval <= 0:
+            return
+        with EdgeTTS._gate_lock:
+            wait = interval - (time.time() - EdgeTTS._gate_last)
+            if wait > 0:
+                time.sleep(wait)
+            EdgeTTS._gate_last = time.time()
 
     def synthesize(self, text, voice, speed, out_base, stop_event=None):
         import edge_tts
 
         _check_stop(stop_event)
+        chosen = voice or self.voice
+        # fail ngay: text toàn tiếng Trung/ký tự lạ + giọng vi → Edge trả về audio rỗng (NoAudioReceived)
+        if str(chosen).startswith("vi") and not _LATIN_TEXT.search(text or ""):
+            raise FatalProviderError(
+                f"Giọng {chosen} không phát âm được text này (toàn ký tự không phải tiếng Việt): "
+                f"{(text or '')[:80]!r} — kiểm tra câu đã được dịch chưa"
+            )
+        self._gate()
         target = out_base.with_suffix(".mp3")
         rate = f"{int(round((speed - 1.0) * 100)):+d}%"
         pitch = f"{int(float(self.profile.option('pitch_hz', 0))):+d}Hz"
 
         async def _run():
-            communicate = edge_tts.Communicate(text, voice or self.voice, rate=rate, pitch=pitch)
+            communicate = edge_tts.Communicate(text, chosen, rate=rate, pitch=pitch)
             await communicate.save(str(target))
 
-        asyncio.run(_run())
+        try:
+            asyncio.run(_run())
+        except Exception as exc:  # noqa: BLE001 - edge_tts ném NoAudioReceived/SocketError đủ kiểu
+            if "no audio" in str(exc).lower():
+                raise NoAudioError(
+                    f"Edge trả audio rỗng cho giọng {chosen} (text ký tự này giọng đó không phát âm được): "
+                    f"{(text or '')[:80]!r}"
+                ) from exc
+            raise
         if not target.exists() or target.stat().st_size == 0:
             raise ProviderError("Edge TTS không trả về âm thanh")
         return target
@@ -281,7 +318,8 @@ class LegacyCustomTTS(TTSProvider):
         return _download(data["data"], out_base.with_suffix(".mp3"))
 
 
-_KINDS: dict[str, type[TTSProvider]] = {
+_KINDS: dict[str, type] = {
+    "blaze": BlazeTTS,
     "edge": EdgeTTS,
     "vbee": VbeeTTS,
     "openai_speech": OpenAISpeechTTS,

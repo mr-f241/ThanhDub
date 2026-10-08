@@ -13,13 +13,17 @@ from .paths import default_projects_root, user_data_dir
 TRANSLATE_KINDS = {
     "google": "Google Translate",
     "microsoft": "Microsoft Translator",
+    "riva": "NVIDIA NIM (Riva NMT)",
+    "deep": "Deep Translator (nhiều engine)",
     "openai": "API kiểu OpenAI",
+    "zen": "OpenCode Zen (model free)",
     "gemini": "API kiểu Gemini",
     "anthropic": "Anthropic (Claude)",
 }
-LLM_KINDS = {"openai", "gemini", "anthropic"}
+LLM_KINDS = {"openai", "zen", "gemini", "anthropic"}
 
 TTS_KINDS = {
+    "blaze": "Blaze TTS (api.blaze.vn)",
     "edge": "Edge TTS (miễn phí)",
     "vbee": "vBee",
     "openai_speech": "API kiểu OpenAI (/v1/audio/speech)",
@@ -47,7 +51,7 @@ class ProviderProfile:
         return self.kind in LLM_KINDS
 
 
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 
 
 @dataclass
@@ -57,6 +61,7 @@ class RenderSettings:
     preset: str = "medium"
     audio_bitrate: str = "192k"
     hwaccel_decode: bool = False
+    export_preset: str = "none"  # none | 1080p | 720p | tiktok (xem pipeline/render.py)
 
 
 @dataclass
@@ -70,10 +75,15 @@ class AppSettings:
     default_tts_profile: str = ""
     default_whisper_model: str = "small"
     whisper_threads: int = 0  # 0 = tự động theo số nhân CPU
+    asr_engine: str = "whisper"  # whisper | moonshine
+    default_moonshine_model: str = "moonshine-ai/moonshine-base"
     asr_device: str = "auto"  # auto | cuda | vulkan | cpu
     translate_batch_size: int = 60
     tts_concurrency: int = 3
     player_backend: str = "auto"  # auto | mpv | qt
+    theme: str = "dark"  # dark | light (áp dụng khi khởi động)
+    check_updates: bool = True  # tự kiểm tra bản mới khi mở app
+    skipped_version: str = ""  # bản mới mà người dùng chọn bỏ qua
     render: RenderSettings = field(default_factory=RenderSettings)
     translate_profiles: list[ProviderProfile] = field(default_factory=list)
     tts_profiles: list[ProviderProfile] = field(default_factory=list)
@@ -139,6 +149,12 @@ def upgrade_settings(settings: AppSettings, version: int) -> None:
             settings.render.video_codec = "auto"
         if settings.whisper_threads == 4:
             settings.whisper_threads = 0
+    if version < 3:
+        # 2.2: thêm bộ nhận dạng Moonshine — project cũ giữ nguyên whisper.cpp
+        if settings.asr_engine not in ("whisper", "moonshine"):
+            settings.asr_engine = "whisper"
+        if not settings.default_moonshine_model:
+            settings.default_moonshine_model = "moonshine-ai/moonshine-base"
     settings.settings_version = SETTINGS_VERSION
 
 

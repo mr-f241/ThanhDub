@@ -4,12 +4,18 @@ import sys
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from .. import APP_NAME
+from .. import APP_NAME, APP_VERSION
 from ..core.config import SettingsStore
 from ..core.paths import fonts_dir, register_dll_dirs, resource_path
-from .main_window import MainWindow
-from .state import AppState
-from .theme import apply_theme
+
+# bảng màu phải nạp trước khi import các module UI (chúng đọc hằng số màu lúc import)
+store = SettingsStore()
+from . import theme  # noqa: E402
+
+theme.set_mode(store.settings.theme if store.settings.theme in ("dark", "light") else "dark")
+
+from .main_window import MainWindow  # noqa: E402
+from .state import AppState  # noqa: E402
 
 
 def load_user_fonts() -> None:
@@ -26,13 +32,13 @@ def main() -> int:
     )
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    app.setOrganizationName("ReviewTrans")
+    app.setOrganizationName("ThanhDub")
     icon_path = resource_path("icon.ico")
     if icon_path.exists():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))
     load_user_fonts()
-    apply_theme(app)
-    state = AppState(SettingsStore())
+    theme.apply_theme(app)
+    state = AppState(store)
     window = MainWindow(state)
     window.show()
     return app.exec()

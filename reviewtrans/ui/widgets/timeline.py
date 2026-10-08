@@ -53,6 +53,9 @@ class Timeline(QtWidgets.QWidget):
         self.peaks_rate = 20
         self.read_only = False
         self._drag: dict | None = None
+        self._clip_by_seg: dict[int, Clip] = {}  # segment_id -> clip, tránh quét tuyến tính khi rê chuột
+        # khi kéo câu, chỉ tính lại clip tối đa ~8 lần/giây thay vì từng pixel chuột
+        self._clip_refresh_timer = QtCore.QTimer(self, singleShot=True, interval=120, timeout=self.refresh_clips)
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.ClickFocus)
 
@@ -72,6 +75,7 @@ class Timeline(QtWidgets.QWidget):
     def refresh_clips(self) -> None:
         self.clips = plan_clips(self.doc, self.segments) if self.doc else []
         self._clip_starts = [c.start for c in self.clips]
+        self._clip_by_seg = {c.segment.id: c for c in self.clips}
         self.update()
 
     def set_peaks(self, peaks: list[float], rate: int) -> None:
@@ -345,7 +349,7 @@ class Timeline(QtWidgets.QWidget):
             for seg in self.segments[first:last]:
                 end = seg.end
                 if row.kind == "dub":
-                    clip = next((c for c in self.clips if c.segment is seg), None)
+                    clip = self._clip_by_seg.get(seg.id)
                     if clip is None:
                         continue
                     end = clip.start + clip.length
@@ -428,7 +432,7 @@ class Timeline(QtWidgets.QWidget):
             obj.end = round(end, 3)
         self._drag["moved"] = True
         if isinstance(obj, Segment):
-            self.refresh_clips()
+            self._clip_refresh_timer.start()  # gộp nhiều lần di chuột thành một lần tính lại
         self.update()
 
     def mouseReleaseEvent(self, _event) -> None:  # noqa: N802
@@ -436,6 +440,7 @@ class Timeline(QtWidgets.QWidget):
         if not drag or not drag.get("moved"):
             return
         if drag["type"] == "segment":
+            self._clip_refresh_timer.stop()
             self.set_segments(self.segments)
             self.segmentsEdited.emit([drag["obj"].id])
         elif drag["type"] == "layer":

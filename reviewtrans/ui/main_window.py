@@ -19,7 +19,8 @@ from .pages.resources import ResourcesPage
 from .pages.settings import SettingsPage
 from .pages.tools import ToolsPage
 from .state import AppState
-from .theme import TEXT_DIM
+from .theme import ACCENT, TEXT_DIM
+from .updates import schedule_startup_check
 from .widgets.common import confirm
 
 NAV = [
@@ -48,10 +49,17 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setSpacing(0)
         rail = QtWidgets.QFrame()
         rail.setObjectName("NavRail")
-        rail.setFixedWidth(96)
+        rail.setFixedWidth(104)
         rail_layout = QtWidgets.QVBoxLayout(rail)
-        rail_layout.setContentsMargins(6, 10, 6, 10)
-        rail_layout.setSpacing(4)
+        rail_layout.setContentsMargins(8, 12, 8, 10)
+        rail_layout.setSpacing(5)
+        # khối logo trên cùng của thanh điều hướng
+        brand = QtWidgets.QLabel("ThanhDub")
+        brand.setObjectName("Brand")
+        brand.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        brand.setStyleSheet(f"color: {ACCENT}; font-size: 15px; font-weight: 700; letter-spacing: 0.5px;")
+        rail_layout.addWidget(brand)
+        rail_layout.addSpacing(8)
         self.stack = QtWidgets.QStackedWidget()
         self.pages: dict[str, QtWidgets.QWidget] = {
             "projects": ProjectsPage(state),
@@ -74,7 +82,7 @@ class MainWindow(QtWidgets.QMainWindow):
             button.setText(label)
             button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             button.setCheckable(True)
-            button.setFixedSize(84, 58)
+            button.setFixedSize(88, 60)
             button.clicked.connect(lambda _=False, k=key: self.navigate(k))
             group.addButton(button)
             self.buttons[key] = button
@@ -133,6 +141,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pending = sum(1 for j in self.state.jobs.jobs if j.state == "pending")
         if not busy:
             self.job_label.setText("Hàng đợi trống")
+            self.job_label.setToolTip("")
         elif pending:
             self.job_label.setToolTip(f"Còn {pending} việc chờ")
 
@@ -147,6 +156,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
         self._update_project_label()
+        schedule_startup_check(self, APP_VERSION, settings_store=self.state.settings_store)
         if not find_tool("ffmpeg") or not find_tool("ffprobe"):
             if confirm(self, "Thiếu FFmpeg", "Chưa có FFmpeg — cần để xử lý video. Mở trang Tài nguyên để tải ngay?"):
                 self.navigate("resources")

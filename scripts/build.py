@@ -1,4 +1,4 @@
-"""Build ReviewTrans Studio: gom công cụ → PyInstaller (onedir) → tự kiểm tra → zip portable → installer.
+"""Build ThanhDub: gom công cụ → PyInstaller (onedir) → tự kiểm tra → zip portable → installer.
 
 Dùng chung cho build.cmd (máy cá nhân) và GitHub Actions.
 
@@ -26,9 +26,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 TOOLS = ROOT / "build" / "tools"
-DIST = ROOT / "dist" / "ReviewTrans"
+DIST = ROOT / "dist" / "ThanhDub"
 RELEASE = ROOT / "release"
-EXE = DIST / "ReviewTrans.exe"
+EXE = DIST / "ThanhDub.exe"
 WHISPER_EXES = ("whisper-cli.exe", "whisper.exe", "main.exe")
 WHISPER_CPP_REF = "v1.9.4"  # phiên bản whisper.cpp dùng để build bản Vulkan
 VULKAN_ZIP = ROOT / "build" / "whisper-vulkan-x64.zip"
@@ -139,7 +139,7 @@ def fetch_whisper_vulkan(source: str = "") -> None:
     """Đưa bản whisper.cpp Vulkan vào build/tools/whisper-vulkan.
 
     Nguồn theo thứ tự: tham số --whisper-vulkan (zip hoặc thư mục) → build/whisper-vulkan-x64.zip
-    → bản đã có → tải từ release của ReviewTrans. Không có thì bỏ qua (app vẫn chạy whisper bằng CPU).
+    → bản đã có → tải từ release của ThanhDub. Không có thì bỏ qua (app vẫn chạy whisper bằng CPU).
     """
     from reviewtrans.core.pipeline import resources
 
@@ -248,12 +248,12 @@ def write_version_files(version: str) -> Path:
   ffi=FixedFileInfo(filevers=({tup}), prodvers=({tup}), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('040904B0', [
-      StringStruct('CompanyName', 'dominhhieu1405'),
-      StringStruct('FileDescription', 'ReviewTrans Studio'),
+      StringStruct('CompanyName', 'Trần Thành'),
+      StringStruct('FileDescription', 'ThanhDub'),
       StringStruct('FileVersion', '{version}'),
-      StringStruct('InternalName', 'ReviewTrans'),
-      StringStruct('OriginalFilename', 'ReviewTrans.exe'),
-      StringStruct('ProductName', 'ReviewTrans Studio'),
+      StringStruct('InternalName', 'ThanhDub'),
+      StringStruct('OriginalFilename', 'ThanhDub.exe'),
+      StringStruct('ProductName', 'ThanhDub'),
       StringStruct('ProductVersion', '{version}')])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
@@ -314,17 +314,17 @@ def self_check(require: list[str]) -> None:
 
 def make_zip(version: str) -> Path:
     RELEASE.mkdir(exist_ok=True)
-    target = RELEASE / f"ReviewTrans-{version}-portable.zip"
+    target = RELEASE / f"ThanhDub-{version}-portable.zip"
     target.unlink(missing_ok=True)
     log(f"Nén {target.name}…")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for path in sorted(DIST.rglob("*")):
             if path.is_file() and path.name != "portable.txt" and "data" not in path.relative_to(DIST).parts[:1]:
-                zf.write(path, Path("ReviewTrans") / path.relative_to(DIST))
+                zf.write(path, Path("ThanhDub") / path.relative_to(DIST))
         zf.writestr(
-            "ReviewTrans/portable.txt",
+            "ThanhDub/portable.txt",
             "File này bật chế độ portable: cài đặt, project, model và công cụ tải thêm được lưu trong thư mục data\\ "
-            "cạnh ReviewTrans.exe. Xoá file này để dùng thư mục người dùng (%USERPROFILE%\\.video_translation_studio).\n",
+            "cạnh ThanhDub.exe. Xoá file này để dùng thư mục người dùng (%USERPROFILE%\\.video_translation_studio).\n",
         )
     log(f"  → {target} ({target.stat().st_size / 1e6:.0f} MB)")
     return target
@@ -353,10 +353,10 @@ def make_installer(version: str, required: bool) -> Path | None:
     log(f"Inno Setup: {iscc}")
     subprocess.run(
         [str(iscc), "/Q", f"/DAppVersion={version}", f"/DSourceDir={DIST}", f"/DOutputDir={RELEASE}",
-         str(ROOT / "installer" / "ReviewTrans.iss")],
+         str(ROOT / "installer" / "ThanhDub.iss")],
         check=True,
     )
-    target = RELEASE / f"ReviewTrans-{version}-setup.exe"
+    target = RELEASE / f"ThanhDub-{version}-setup.exe"
     log(f"  → {target} ({target.stat().st_size / 1e6:.0f} MB)")
     return target
 

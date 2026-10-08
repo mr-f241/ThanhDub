@@ -53,13 +53,16 @@ GLYPHS = {
     "zoom_out": "",
     "split": "",
     "merge": "",
-    "run": "",
-    "cut": "",
+    "run": "",
+    "cut": "",
+    "undo": "",
+    "redo": "",
 }
 
 FALLBACK = {
     "play": "▶", "pause": "⏸", "stop": "■", "add": "+", "delete": "✕", "up": "▲", "down": "▼",
     "eye": "◉", "eye_off": "○", "volume": "♪", "mute": "×", "prev": "◀", "next": "▶",
+    "undo": "↶", "redo": "↷",
 }
 
 

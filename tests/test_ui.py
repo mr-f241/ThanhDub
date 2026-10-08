@@ -239,3 +239,127 @@ def test_preview_remix_follows_original_volume(qapp, home, tmp_path, monkeypatch
     assert out.exists() and _mean_volume(out) < -80
     window.close()
     _wait(qapp, 100)
+
+
+def test_model_free_zen_quick_add(qapp, home):
+    """Nút "Model free (Zen)" phải tạo profile Zen + đặt làm mặc định + nạp ô Model."""
+    from reviewtrans.core.config import LLM_KINDS, TRANSLATE_KINDS, ProviderProfile, SettingsStore
+    from reviewtrans.core.providers.translate import ZEN_BASE_URL, ZenTranslator, create_translator
+    from reviewtrans.ui.pages.providers import ZEN_FREE_MODELS, ProfileSection, zen_free_profile
+    from reviewtrans.ui.state import AppState
+
+    # Loại provider trong Providers phải có "OpenCode Zen (model free)" để tìm thấy
+    assert TRANSLATE_KINDS["zen"] == "OpenCode Zen (model free)"
+    assert "zen" in LLM_KINDS  # nên được dùng ngữ cảnh + tự cập nhật ngữ cảnh
+    assert isinstance(create_translator(ProviderProfile(kind="zen")), ZenTranslator)
+
+    state = AppState(SettingsStore(home / "settings.json"))
+    section = ProfileSection(state, "translate")
+    section.add_free("big-pickle")
+
+    profile = state.settings.translate_profiles[-1]
+    assert profile.kind == "zen"
+    assert profile.base_url == ZEN_BASE_URL
+    assert profile.model == "big-pickle"
+    assert profile.name.startswith("Zen ")
+    assert state.settings.default_translate_profile == profile.id
+    assert section.editor.profile is profile
+    assert [section.editor.model.itemText(i) for i in range(section.editor.model.count())] == list(ZEN_FREE_MODELS)
+    assert zen_free_profile("mimo-v2.6-flash-free").model == "mimo-v2.6-flash-free"
+    # chọn kind "zen" trong dropdown Loại cũng phải nạp đúng danh sách model free
+    section.editor.kind.set_value("zen")
+    section.editor._kind_changed(0)
+    assert section.editor.profile.kind == "zen"
+    assert [section.editor.model.itemText(i) for i in range(section.editor.model.count())] == list(ZEN_FREE_MODELS)
+
+
+def test_man_hinh_chinh_hien_model_va_canh_bao_key(qapp, home):
+    """Màn hình chính phải thấy đang dùng model nào, thiếu key thì gõ đỏ, bấm Đổi là qua Providers."""
+    from reviewtrans.core.config import SettingsStore
+    from reviewtrans.ui.pages.projects import ModelBar
+    from reviewtrans.ui.pages.providers import zen_free_profile
+    from reviewtrans.ui.state import AppState
+
+    state = AppState(SettingsStore(home / "settings.json"))
+    profile = zen_free_profile("big-pickle")
+    state.settings.translate_profiles.append(profile)
+    state.settings.default_translate_profile = profile.id
+
+    bar = ModelBar(state)
+    assert "big-pickle" in bar.label.text()
+    assert "opencode.ai/auth" in bar.key_label.text()  # chưa có key -> cảnh báo đỏ
+
+    profile.api_keys.append("sk-test")
+    bar.refresh()
+    assert bar.key_label.text() == ""
+
+    got: list[str] = []
+    state.navigateRequested.connect(got.append)
+    bar._go()
+    assert got == ["providers"]
+
+
+@needs_ffmpeg
+def test_editor_undo_redo(qapp, home, tmp_path):
+    from reviewtrans.core.config import SettingsStore
+    from reviewtrans.core.store import ProjectStore
+    from reviewtrans.ui.main_window import MainWindow
+    from reviewtrans.ui.state import AppState
+    from reviewtrans.ui.theme import apply_theme
+
+    apply_theme(qapp)
+    source = tmp_path / "Tap 01.mp4"
+    run_checked(
+        [str(find_tool("ffmpeg")), "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=3",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)],
+        "tạo video test",
+    )
+    state = AppState(SettingsStore())
+    window = MainWindow(state)
+    window.resize(1400, 900)
+    state.create_project(tmp_path / "projects", "Undo")
+    doc = state.store.add_video(state.project, str(source), probe(source))
+    state.store.save_segments(doc.id, [
+        Segment(id=1, start=0.2, end=1.2, source="a", text="một"),
+        Segment(id=2, start=1.5, end=2.8, source="b", text="hai"),
+    ])
+    state.openVideoRequested.emit(doc.id)
+    _wait(qapp, 500)
+    editor = window.pages["editor"]
+    assert len(editor.segments) == 2 and editor._history_index == 0
+
+    # sửa bản dịch → có thể hoàn tác về câu cũ
+    model = editor.table.model_
+    model.setData(model.index(0, 4), "một đã sửa")
+    assert editor.segments[0].text == "một đã sửa" and editor.redo_button.isEnabled() is False
+    editor.undo()
+    assert editor.segments[0].text == "một" and editor.undo_button.isEnabled() is False
+    editor.redo()
+    assert editor.segments[0].text == "một đã sửa"
+
+    # xoá câu → undo trả lại câu; snapshot sau khi redo phải đúng
+    editor.segment_action("delete", [2])
+    assert len(editor.segments) == 1
+    editor.undo()
+    assert len(editor.segments) == 2 and {s.id for s in editor.segments} == {1, 2}
+    editor.redo()
+    assert len(editor.segments) == 1
+    editor.save_now()
+    assert len(state.store.load_segments(doc.id)) == 1
+
+    window.close()
+    _wait(qapp, 100)
+
+
+def test_light_theme(qapp):
+    from reviewtrans.ui import theme
+
+    theme.set_mode("light")
+    try:
+        assert theme.BG == "#f3f4f7" and theme.ACCENT == "#7c5cff"
+        assert "#f3f4f7" in theme.QSS and theme.STATE_COLORS["running"] == theme.ACCENT
+        theme.apply_theme(qapp)  # không được lỗi
+    finally:
+        theme.set_mode("dark")
+    assert theme.BG == "#15171c" and "#15171c" in theme.QSS

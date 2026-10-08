@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..models import Segment, VideoDoc
-from ..proc import atempo_chain, require_tool, run_checked
+from ..proc import atempo_chain, require_tool, run_checked, subprocess_kwargs
 from . import RunContext
 
 BATCH = 24
+MAX_INLINE_GRAPH = 30000  # Windows giới hạn mỗi tham số 32767 ký tự, chừa chỗ cho phần còn lại
 
 
 @dataclass
@@ -43,10 +45,44 @@ def plan_clips(doc: VideoDoc, segments: list[Segment]) -> list[Clip]:
     return clips
 
 
+_script_option_cache: dict[str, bool] = {}
+
+
+def _has_script_option(ffmpeg: Path) -> bool:
+    """Nightly FFmpeg (bản app tự tải) bỏ `-filter_complex_script`; bản 6.1 hệ thống còn.
+    Kiểm tra một lần theo path rồi cache, tránh `-h full` mỗi lượt trộn."""
+    key = str(ffmpeg)
+    cached = _script_option_cache.get(key)
+    if cached is None:
+        try:
+            result = subprocess.run(
+                [key, "-h", "full"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", check=False, **subprocess_kwargs(),
+            )
+            cached = "-filter_complex_script" in result.stdout
+        except OSError:
+            cached = False
+        _script_option_cache[key] = cached
+    return cached
+
+
 def filter_script_args(work_dir: Path, name: str, graph: str) -> list[str]:
+    """Ghi graph ra file cho FFmpeg đọc — graph duck của video dài cả chục KB, tránh kẹp vào lệnh.
+
+    Nightly FFmpeg (bản app tải về, N-127142) bỏ `-filter_complex_script` trong khi bản
+    6.1 của hệ thống còn, nên phải hỏi ffmpeg thật rồi mới chọn; không thì trộn fail ngay
+    với `Unrecognized option 'filter_complex_script'`.
+    """
     script = work_dir / name
     script.write_text(graph, encoding="utf-8")
-    return ["-/filter_complex", str(script)]
+    if _has_script_option(require_tool("ffmpeg")):
+        return ["-filter_complex_script", str(script)]
+    if len(graph) > MAX_INLINE_GRAPH:
+        raise RuntimeError(
+            f"FFmpeg của bạn thiếu -filter_complex_script và graph ({len(graph)} ký tự) "
+            "quá dài để kẹp vào lệnh. Hãy dùng FFmpeg 6.1+ hoặc bản có option này."
+        )
+    return ["-filter_complex", graph]
 
 
 def _merge_intervals(intervals: list[tuple[float, float]], gap: float = 0.35) -> list[tuple[float, float]]:
@@ -65,6 +101,15 @@ def build_dub_track(ctx: RunContext, doc: VideoDoc, clips: list[Clip]) -> Path |
     ffmpeg = require_tool("ffmpeg")
     cache = ctx.store.cache_dir(doc.id)
     tts_dir = ctx.store.tts_dir(doc.id)
+    # record trỏ file chưa tồn tại (TTS lỗi/ bị xoá) từng làm ffmpeg nuốt input và fail mù
+    present = [c for c in clips if (tts_dir / c.file).is_file()]
+    if len(present) != len(clips):
+        gaps = [c.segment.id for c in clips if not (tts_dir / c.file).is_file()]
+        ctx.log(f"Bỏ {len(gaps)} câu chưa có file TTS: " + ", ".join(f"#{i}" for i in gaps[:12]))
+        clips = present
+    if not clips:
+        ctx.log("Không còn câu nào có file TTS để trộn lồng tiếng.")
+        return None
     duration = max(doc.duration, max(c.start + c.length for c in clips) + 0.5)
     signature = hashlib.md5(
         (

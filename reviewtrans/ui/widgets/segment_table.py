@@ -40,10 +40,12 @@ class SegmentModel(QtCore.QAbstractTableModel):
         self.tts_status: dict[int, str] = {}
         self.active_id = -1
         self.read_only = False
+        self._rows: dict[int, int] = {}  # segment_id -> hàng, để row_of là O(1)
 
     def set_segments(self, segments: list[Segment]) -> None:
         self.beginResetModel()
         self.segments = segments
+        self._rows = {seg.id: row for row, seg in enumerate(segments)}
         self.endResetModel()
 
     def set_tts_status(self, status: dict[int, str]) -> None:
@@ -61,10 +63,7 @@ class SegmentModel(QtCore.QAbstractTableModel):
                 self.dataChanged.emit(self.index(row, 0), self.index(row, len(COLUMNS) - 1))
 
     def row_of(self, segment_id: int) -> int:
-        for row, seg in enumerate(self.segments):
-            if seg.id == segment_id:
-                return row
-        return -1
+        return self._rows.get(segment_id, -1)
 
     def refresh_row(self, segment: Segment) -> None:
         row = self.row_of(segment.id)

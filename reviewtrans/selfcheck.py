@@ -1,4 +1,4 @@
-"""Kiểm tra bản đóng gói có đủ thư viện và công cụ: ReviewTrans.exe --self-check <file.json>."""
+"""Kiểm tra bản đóng gói có đủ thư viện và công cụ: ThanhDub.exe --self-check <file.json>."""
 from __future__ import annotations
 
 import importlib
@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 MODULES = [
-    "requests", "openai", "anthropic", "google.genai", "edge_tts", "py7zr",
+    "requests", "openai", "anthropic", "google.genai", "riva.client", "edge_tts", "py7zr",
     "PyQt6.QtWidgets", "PyQt6.QtMultimedia", "reviewtrans.ui.player.qt_backend",
     "reviewtrans.ui.main_window", "reviewtrans.core.pipeline.runner",
 ]

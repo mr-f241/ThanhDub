@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -16,8 +17,9 @@ from ..paths import find_libmpv, find_tool, models_dir, user_bin_dir
 from ..proc import subprocess_kwargs
 
 WHISPER_REPO = "ggerganov/whisper.cpp"
-APP_REPO = "dominhhieu1405/ReviewTrans"  # release của app kèm bản whisper.cpp Vulkan tự build
+APP_REPO = "mr-f241/ThanhDub"  # release của app kèm bản whisper.cpp Vulkan tự build
 VULKAN_ASSET = "whisper-vulkan-x64.zip"
+MOONSHINE_REPO = "moonshine-ai"
 ProgressFn = Callable[[float, str], None]
 
 KNOWN_WHISPER_MODELS = [
@@ -25,19 +27,67 @@ KNOWN_WHISPER_MODELS = [
     "small-q5_1", "medium-q5_0", "large-v3-turbo-q5_0",
 ]
 
+# Moonshine (moonshine-ai) là model ASR nhỏ, chạy nhanh, ngôn ngữ nằm sẵn trong model.
+MOONSHINE_LANGUAGES = {
+    "en": "Tiếng Anh", "zh": "Tiếng Trung", "vi": "Tiếng Việt", "ja": "Tiếng Nhật",
+    "ko": "Tiếng Hàn", "ar": "Tiếng Ả Rập", "uk": "Tiếng Ukraine",
+}
+KNOWN_MOONSHINE_MODELS = [
+    f"{MOONSHINE_REPO}/moonshine-{size}{suffix}"
+    for size in ("tiny", "base")
+    for suffix in ("", *(f"-{code}" for code in MOONSHINE_LANGUAGES if code != "en"))
+]
+
 
 def _noop(*_args) -> None:
     return None
 
 
+DOWNLOAD_ATTEMPTS = 5
+
+
 def download_file(url: str, target: Path, progress: ProgressFn = _noop, stop=None, label: str = "") -> Path:
+    """Tải file: nối tiếp phần đã tải dở (Range) và tự thử lại khi mạng đứt giữa chừng."""
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")
-    with requests.get(url, stream=True, timeout=60, headers={"User-Agent": "ReviewTrans"}) as response:
+    last: Exception | None = None
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        if stop is not None and stop.is_set():
+            raise InterruptedError("Đã huỷ tải")
+        try:
+            _download_resume(url, partial, progress, stop, label)
+            partial.replace(target)
+            return target
+        except InterruptedError:
+            raise
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            last = exc
+            if status == 416 and partial.exists():  # server không cho nối → tải lại từ đầu
+                partial.unlink(missing_ok=True)
+            else:
+                break  # 404/403…: thử lại cũng vậy
+        except (requests.RequestException, OSError) as exc:
+            last = exc
+        if attempt + 1 < DOWNLOAD_ATTEMPTS:
+            time.sleep(min(20.0, 2.0 * (attempt + 1)))
+            progress(0, f"{label}: mất kết nối, nối lại ({attempt + 2}/{DOWNLOAD_ATTEMPTS})…")
+    if last is None:
+        raise InterruptedError("Đã huỷ tải")
+    raise last
+
+
+def _download_resume(url: str, partial: Path, progress: ProgressFn, stop, label: str) -> None:
+    headers = {"User-Agent": "ThanhDub"}
+    start = partial.stat().st_size if partial.exists() else 0
+    if start:
+        headers["Range"] = f"bytes={start}-"
+    with requests.get(url, stream=True, timeout=60, headers=headers) as response:
+        resumed = bool(start) and response.status_code == 206
+        done = start if resumed else 0
+        total = done + int(response.headers.get("content-length") or 0)
         response.raise_for_status()
-        total = int(response.headers.get("content-length") or 0)
-        done = 0
-        with open(partial, "wb") as handle:
+        with open(partial, "ab" if resumed else "wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 512):
                 if stop is not None and stop.is_set():
                     raise InterruptedError("Đã huỷ tải")
@@ -45,9 +95,7 @@ def download_file(url: str, target: Path, progress: ProgressFn = _noop, stop=Non
                     handle.write(chunk)
                     done += len(chunk)
                     if total:
-                        progress(done * 100.0 / total, f"{label} {done / 1e6:.1f}/{total / 1e6:.1f} MB")
-    partial.replace(target)
-    return target
+                        progress(min(100.0, done * 100.0 / total), f"{label} {done / 1e6:.1f}/{total / 1e6:.1f} MB")
 
 
 def tool_status() -> dict[str, str]:
@@ -106,7 +154,7 @@ def download_ffmpeg(progress: ProgressFn = _noop, stop=None, bin_dir: Path | Non
 
 
 def _github_headers() -> dict:
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "ReviewTrans"}
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "ThanhDub"}
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:  # CI: tránh giới hạn 60 request/giờ của API không đăng nhập
         headers["Authorization"] = f"Bearer {token}"
@@ -182,7 +230,7 @@ def download_whisper_cuda(progress: ProgressFn = _noop, stop=None, bin_dir: Path
 
 def download_whisper_vulkan(progress: ProgressFn = _noop, stop=None, bin_dir: Path | None = None) -> Path:
     """whisper.cpp bản Vulkan (AMD/Intel/NVIDIA). whisper.cpp không phát hành bản này cho Windows
-    nên CI của ReviewTrans tự build và đính kèm vào release."""
+    nên CI của ThanhDub tự build và đính kèm vào release."""
     if not platform.system().lower().startswith("win"):
         raise RuntimeError("Hãy tự build whisper.cpp với -DGGML_VULKAN=ON rồi đặt vào thư mục bin/whisper-vulkan.")
     name, url = _github_asset(APP_REPO, lambda n: n == VULKAN_ASSET)
@@ -214,6 +262,146 @@ def ensure_whisper_model(model: str, progress: ProgressFn = _noop, stop=None) ->
         return path
     url = f"https://huggingface.co/{WHISPER_REPO}/resolve/main/ggml-{model}.bin"
     return download_file(url, path, progress, stop, f"model {model}")
+
+
+# ------------------------------------------------------------------ moonshine
+
+
+def moonshine_model_id(model: str) -> str:
+    return model if "/" in model else f"{MOONSHINE_REPO}/{model}"
+
+
+def moonshine_short_name(model: str) -> str:
+    return moonshine_model_id(model).rsplit("/", 1)[-1]
+
+
+def moonshine_model_dir(model: str) -> Path:
+    return models_dir() / "moonshine" / moonshine_short_name(model)
+
+
+def moonshine_model_installed(model: str) -> bool:
+    return (moonshine_model_dir(model) / "config.json").is_file()
+
+
+def downloaded_moonshine_models() -> list[str]:
+    root = models_dir() / "moonshine"
+    if not root.is_dir():
+        return []
+    return sorted(f"{MOONSHINE_REPO}/{p.name}" for p in root.iterdir() if (p / "config.json").is_file())
+
+
+def moonshine_model_size(model: str) -> int:
+    directory = moonshine_model_dir(model)
+    return sum(p.stat().st_size for p in directory.rglob("*") if p.is_file()) if directory.is_dir() else 0
+
+
+def moonshine_language(model: str) -> str:
+    """Mã ngôn ngữ nằm trong tên model (moonshine-tiny-zh -> zh), '' nếu là bản tiếng Anh."""
+    name = moonshine_short_name(model)
+    for code in MOONSHINE_LANGUAGES:
+        if name.endswith(f"-{code}"):
+            return code
+    return "en"
+
+
+def suggest_moonshine_model(language: str, size: str = "base") -> str:
+    """Gợi ý model theo ngôn ngữ nguồn: có bản riêng thì dùng, không thì lùi về tiếng Anh."""
+    code = (language or "").split("-")[0]
+    name = f"moonshine-{size}" + (f"-{code}" if code in MOONSHINE_LANGUAGES and code != "en" else "")
+    return f"{MOONSHINE_REPO}/{name}"
+
+
+def moonshine_label(model: str) -> str:
+    name = moonshine_short_name(model)
+    language = MOONSHINE_LANGUAGES.get(moonshine_language(model), "")
+    return f"{name} — {language}" if language else name
+
+
+def _hf_files(repo_id: str) -> list[tuple[str, int]]:
+    """Danh sách file của model trên Hugging Face kèm kích thước (bỏ .gitattributes)."""
+    response = requests.get(
+        f"https://huggingface.co/api/models/{repo_id}", params={"blobs": "true"}, timeout=30
+    )
+    response.raise_for_status()
+    files = []
+    for sibling in response.json().get("siblings", []):
+        name = sibling.get("rfilename", "")
+        if not name or name.startswith("."):
+            continue
+        files.append((name, int(sibling.get("size") or 0)))
+    return files
+
+
+def ensure_moonshine_model(model: str, progress: ProgressFn = _noop, stop=None) -> Path:
+    """Tải model Moonshine về thư mục models/moonshine/<tên> để from_pretrained đọc trực tiếp."""
+    repo_id = moonshine_model_id(model)
+    target = moonshine_model_dir(repo_id)
+    if moonshine_model_installed(repo_id):
+        return target
+    files = _hf_files(repo_id)
+    if not files:
+        raise FileNotFoundError(f"Không tìm thấy model {repo_id} trên Hugging Face")
+    total = sum(size for _name, size in files) or 1
+    done = 0
+    label = moonshine_short_name(repo_id)
+    for name, size in files:
+        url = f"https://huggingface.co/{repo_id}/resolve/main/{name}"
+        download_file(
+            url, target / name,
+            lambda pct, _msg, base=done, span=size, file=name: progress(
+                min(100.0, (base + span * pct / 100.0) * 100.0 / total), f"{label}: {file}"
+            ),
+            stop, label,
+        )
+        done += size
+    progress(100, f"{label} xong")
+    return target
+
+
+def delete_moonshine_model(model: str) -> None:
+    directory = moonshine_model_dir(model)
+    if directory.is_dir():
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def moonshine_runtime() -> tuple[bool, str]:
+    """(đã cài torch + transformers chưa, mô tả thiếu gì)."""
+    import importlib.util
+
+    missing = [name for name in ("torch", "transformers") if importlib.util.find_spec(name) is None]
+    return (not missing, "" if not missing else "còn thiếu: " + ", ".join(missing))
+
+
+def install_moonshine_deps(progress: ProgressFn = _noop, stop=None) -> str:
+    """Cài torch (bản CPU) + transformers để chạy Moonshine. Chạy pip trong chính môi trường của app."""
+    import sys
+
+    ok, missing = moonshine_runtime()
+    if ok:
+        return "torch và transformers đã có sẵn."
+    if getattr(sys, "frozen", False):
+        raise RuntimeError(
+            "Bản đóng gói không tự cài được thư viện. Hãy chạy từ mã nguồn, hoặc cài trước: "
+            "pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio && pip install transformers"
+        )
+    steps = []
+    if missing != ["transformers"]:
+        steps.append([
+            sys.executable, "-m", "pip", "install", "--index-url",
+            "https://download.pytorch.org/whl/cpu", "torch", "torchaudio",
+        ])
+    steps.append([sys.executable, "-m", "pip", "install", "transformers>=4.49"])
+    for index, command in enumerate(steps):
+        progress(index * 50.0, f"pip {' '.join(command[4:])}…")
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            encoding="utf-8", errors="replace", check=False, **subprocess_kwargs(),
+        )
+        if result.returncode != 0:
+            tail = " | ".join(result.stdout.strip().splitlines()[-3:])
+            raise RuntimeError(f"pip lỗi: {tail}")
+    return "Đã cài torch + transformers. Khởi động lại ứng dụng."
+
 
 
 # ------------------------------------------------------------------ libmpv

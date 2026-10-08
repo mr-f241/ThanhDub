@@ -10,7 +10,7 @@ from reviewtrans.core.models import Layer, Segment
 from reviewtrans.core.paths import find_tool
 from reviewtrans.core.pipeline import RunContext
 from reviewtrans.core.pipeline import translate as translate_mod
-from reviewtrans.core.pipeline.mix import run_mix
+from reviewtrans.core.pipeline.mix import filter_script_args, run_mix
 from reviewtrans.core.pipeline.render import run_render
 from reviewtrans.core.pipeline.runner import VideoPipeline
 from reviewtrans.core.proc import probe, run_checked
@@ -31,8 +31,9 @@ class FakeLLM(LLMTranslator):
                 "characters": [{"source": "林凡", "target": "Lâm Phàm", "gender": "nam"}],
                 "glossary": [{"source": "宗门", "target": "tông môn"}],
             })
-        items = json.loads(re.search(r"Items \(JSON\):\n(.*)\n\nReturn", prompt, re.S).group(1))
-        return json.dumps([{"id": it["id"], "text": f"VI:{it['text']}"} for it in items], ensure_ascii=False)
+        block = re.search(r"Items:\n(.*?)\n\nReturn EXACTLY", prompt, re.S).group(1)
+        rows = [m for m in (re.match(r"(\d+)\.\s(.*)", line) for line in block.splitlines()) if m]
+        return "\n".join(f"{m.group(1)}. VI:{m.group(2)}" for m in rows)
 
 
 def _ctx(tmp_path, home):
@@ -44,6 +45,68 @@ def _ctx(tmp_path, home):
     store.save_project(project)
     logs: list[str] = []
     return RunContext(store=store, project=project, settings=settings, log=logs.append), logs
+
+
+def test_filter_script_args_falls_back_without_script_option(tmp_path, home, monkeypatch):
+    """Nightly FFmpeg (bản app tải) bỏ -filter_complex_script → phải truyền graph trực tiếp."""
+    from reviewtrans.core.pipeline import mix as mix_mod
+
+    graph = "[0:a]aresample=48000[out]"
+    monkeypatch.setattr(mix_mod, "_has_script_option", lambda _ff: True)
+    args = filter_script_args(tmp_path, "g.txt", graph)
+    assert args[0] == "-filter_complex_script"
+    assert (tmp_path / "g.txt").read_text(encoding="utf-8") == graph
+
+    monkeypatch.setattr(mix_mod, "_has_script_option", lambda _ff: False)
+    args = filter_script_args(tmp_path, "g.txt", graph)
+    assert args == ["-filter_complex", graph]
+
+    # không có script option mà graph quá dài cho một tham số → báo rõ thay vì để ffmpeg fail khó hiểu
+    monkeypatch.setattr(mix_mod, "MAX_INLINE_GRAPH", 10)
+    with pytest.raises(RuntimeError, match="thiếu -filter_complex_script"):
+        filter_script_args(tmp_path, "g.txt", graph)
+
+
+def test_run_checked_puts_output_into_error():
+    """Lỗi lệnh phải kèm output thật, không chỉ 'xem log'."""
+    import sys as _sys
+
+    with pytest.raises(RuntimeError, match="chi tiết lỗi"):
+        run_checked(
+            [_sys.executable, "-c", "print('chi tiết lỗi'); raise SystemExit(3)"],
+            "Lệnh thử",
+        )
+
+
+@needs_ffmpeg
+def test_mix_skips_clips_with_missing_tts_file(tmp_path, home):
+    """Record trỏ file TTS chưa tồn tại → bỏ câu đó, không để ffmpeg nuốt input rồi fail mù."""
+    ctx, logs = _ctx(tmp_path, home)
+    ffmpeg = str(find_tool("ffmpeg"))
+    source = tmp_path / "src_missing.mp4"
+    run_checked(
+        [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=4",
+         "-f", "lavfi", "-i", "sine=frequency=300:duration=4",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(source)],
+        "tạo video test",
+    )
+    doc = ctx.store.add_video(ctx.project, str(source), probe(source))
+    tts_dir = ctx.store.tts_dir(doc.id)
+    run_checked(
+        [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=1", "-ac", "1", "-ar", "44100", str(tts_dir / "seg_ok.wav")],
+        "tạo tts giả",
+    )
+    segs = [
+        Segment(id=1, start=0.5, end=1.5, source="甲", text="Câu có file", tts_file="seg_ok.wav", tts_duration=1.0),
+        Segment(id=2, start=2.0, end=3.0, source="乙", text="Câu thiếu file", tts_file="seg_404.wav", tts_duration=1.0),
+    ]
+    ctx.store.save_segments(doc.id, segs)
+
+    mix = run_mix(ctx, doc, segs)
+    assert mix.exists()
+    assert any("Bỏ 1 câu chưa có file TTS: #2" in line for line in logs), logs[-10:]
 
 
 def test_translate_and_context_update(tmp_path, home, monkeypatch):

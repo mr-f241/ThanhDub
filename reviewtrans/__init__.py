@@ -1,6 +1,6 @@
-APP_NAME = "ReviewTrans Studio"
+APP_NAME = "ThanhDub"
 
 try:  # scripts/build.py ghi số phiên bản vào đây khi đóng gói
     from ._build_info import VERSION as APP_VERSION
 except ImportError:
-    APP_VERSION = "2.1.0"
+    APP_VERSION = "2.2.0"

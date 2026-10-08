@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from PyQt6 import QtCore, QtGui, QtMultimedia, QtWidgets
@@ -14,15 +15,23 @@ from ...core.models import (
     VideoDoc,
     clone,
 )
+from ...core.cover_fit import detect_text_region
 from ...core.pipeline import RunContext
 from ...core.pipeline.mix import plan_clips, run_mix
 from ...core.pipeline.render import run_render
-from ...core.pipeline.resources import KNOWN_WHISPER_MODELS, downloaded_whisper_models
+from ...core.hardware import ASR_ENGINES
+from ...core.pipeline.resources import (
+    KNOWN_MOONSHINE_MODELS,
+    KNOWN_WHISPER_MODELS,
+    downloaded_moonshine_models,
+    downloaded_whisper_models,
+    moonshine_label,
+)
 from ...core.pipeline.translate import translate_segments
 from ...core.pipeline.tts import resolve_voice, run_tts, segment_key, tts_path, tts_resolved
 from ...core.resolve import resolve
 from ...core.providers.tts import create_tts
-from ...core.srt import format_clock, render_srt
+from ...core.srt import format_clock, match_translation, parse_srt, render_srt
 from ..icons import icon
 from ..jobs import run_background
 from ..player import create_player
@@ -118,6 +127,7 @@ class SegmentInspector(QtWidgets.QWidget):
         for index, (key, label, name) in enumerate((
             ("translate", "Dịch lại", "translate"), ("tts", "Lồng tiếng lại", "speaker"),
             ("listen", "Nghe", "play"), ("lock", "Khoá/Mở", "lock"),
+            ("preview_voice", "Nghe thử giọng", "speaker"), ("pick_voice", "Chọn giọng…", "context"),
         )):
             button = push_button(label, lambda _=False, k=key: self._emit_action(k), name)
             buttons.addWidget(button, index // 2, index % 2)
@@ -196,6 +206,7 @@ class VideoSettingsPanel(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.doc: VideoDoc | None = None
+        self.project_engine = "whisper"
         self._loading = False
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -206,11 +217,14 @@ class VideoSettingsPanel(QtWidgets.QWidget):
         self.source = PathEdit("file", "Video (*.*)")
         self.info = QtWidgets.QLabel()
         self.info.setStyleSheet(f"color: {TEXT_DIM};")
-        self.mode = ComboBox([("asr", "Nhận dạng giọng nói (Whisper)"), ("srt", "Dùng file SRT có sẵn")])
+        self.mode = ComboBox([("asr", "Nhận dạng giọng nói"), ("srt", "Dùng file SRT có sẵn")])
         self.srt = PathEdit("file", "Phụ đề (*.srt);;Tất cả (*.*)")
         self.language = ComboBox([("", "Theo project")] + [(c, display_name(c)) for c in SOURCE_LANGUAGES])
+        self.asr_engine = ComboBox([("", "Theo project")] + ASR_ENGINES)
         self.whisper = ComboBox()
         self.whisper.setEditable(True)
+        self.moonshine = ComboBox()
+        self.moonshine.setEditable(True)
         self.flip = QtWidgets.QCheckBox("Lật ngang video (tránh bản quyền)")
         form.addRow("Tên", self.name)
         form.addRow("File video", self.source)
@@ -218,7 +232,9 @@ class VideoSettingsPanel(QtWidgets.QWidget):
         form.addRow("Lấy câu thoại", self.mode)
         form.addRow("File SRT", self.srt)
         form.addRow("Ngôn ngữ gốc", self.language)
+        form.addRow("Bộ nhận dạng", self.asr_engine)
         form.addRow("Model Whisper", self.whisper)
+        form.addRow("Model Moonshine", self.moonshine)
         form.addRow("", self.flip)
         layout.addWidget(box)
         out = QtWidgets.QGroupBox("Xuất")
@@ -230,9 +246,11 @@ class VideoSettingsPanel(QtWidgets.QWidget):
         self.open_output = push_button("Mở file", lambda: self.doc and self.doc.last_output and open_path(self.doc.last_output))
         self.open_folder = push_button("Mở thư mục", lambda: self.doc and self.doc.last_output and open_path(str(Path(self.doc.last_output).parent)))
         self.export_srt = push_button("Xuất SRT…", lambda: self.changed.emit("export_srt"))
+        self.import_srt = push_button("Nhập SRT đã dịch…", lambda: self.changed.emit("import_srt"))
         row.addWidget(self.open_output)
         row.addWidget(self.open_folder)
         row.addWidget(self.export_srt)
+        row.addWidget(self.import_srt)
         out_layout.addLayout(row)
         layout.addWidget(out)
         layout.addStretch()
@@ -241,11 +259,14 @@ class VideoSettingsPanel(QtWidgets.QWidget):
         self.mode.currentIndexChanged.connect(lambda _i: self._commit("mode"))
         self.srt.changed.connect(lambda _p: self._commit("srt"))
         self.language.currentIndexChanged.connect(lambda _i: self._commit("language"))
+        self.asr_engine.currentIndexChanged.connect(lambda _i: self._commit("asr_engine"))
         self.whisper.currentTextChanged.connect(lambda _t: self._commit("whisper"))
+        self.moonshine.currentTextChanged.connect(lambda _t: self._commit("moonshine"))
         self.flip.toggled.connect(lambda _c: self._commit("flip"))
 
-    def set_document(self, doc: VideoDoc | None, project_whisper: str = "") -> None:
+    def set_document(self, doc: VideoDoc | None, project_whisper: str = "", project_engine: str = "whisper") -> None:
         self.doc = doc
+        self.project_engine = project_engine or "whisper"
         if doc is None:
             return
         self._loading = True
@@ -259,9 +280,21 @@ class VideoSettingsPanel(QtWidgets.QWidget):
         models = sorted(set(downloaded_whisper_models() + KNOWN_WHISPER_MODELS))
         self.whisper.set_items([("", f"Theo project ({project_whisper})")] + [(m, m) for m in models], keep=False)
         self.whisper.set_value(doc.whisper_model)
+        moon = sorted(set(downloaded_moonshine_models() + KNOWN_MOONSHINE_MODELS),
+                      key=lambda m: (not m.endswith(("zh", "vi")), m))
+        self.moonshine.set_items([("", "Theo project")] + [(m, moonshine_label(m)) for m in moon], keep=False)
+        self.moonshine.set_value(doc.moonshine_model)
+        self.asr_engine.set_value(doc.asr_engine)
+        self.sync_engine()
         self.flip.setChecked(doc.flip_horizontal)
         self.output.setText(doc.last_output or "Chưa xuất")
         self._loading = False
+
+    def sync_engine(self) -> None:
+        engine = self.asr_engine.value() or getattr(self, "project_engine", "whisper")
+        moonshine = engine == "moonshine"
+        self.whisper.setEnabled(not moonshine)
+        self.moonshine.setEnabled(moonshine)
 
     def _commit(self, field: str) -> None:
         if self._loading or self.doc is None:
@@ -275,7 +308,11 @@ class VideoSettingsPanel(QtWidgets.QWidget):
         d.source_language = self.language.value() or ""
         value = self.whisper.currentData()
         d.whisper_model = value if value is not None else self.whisper.currentText().strip()
+        mval = self.moonshine.currentData()
+        d.moonshine_model = mval if mval is not None else self.moonshine.currentText().strip()
+        d.asr_engine = self.asr_engine.value() or ""
         d.flip_horizontal = self.flip.isChecked()
+        self.sync_engine()
         self.changed.emit(field)
 
 
@@ -297,6 +334,13 @@ class EditorPage(QtWidgets.QWidget):
         self.reload_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._reload_from_disk)
         # bản nghe thử: tự trộn lại ở nền mỗi khi âm lượng/track/thời gian câu đổi
         self.remix_timer = QtCore.QTimer(self, singleShot=True, interval=900, timeout=self._auto_remix)
+        # tính lại clip lồng tiếng trên timeline: gộp nhiều lần sửa liên tiếp (gõ chữ, kéo…) vào một lần tính
+        self._clips_timer = QtCore.QTimer(self, singleShot=True, interval=150, timeout=self._refresh_clips_now)
+        # lịch sử undo/redo: lưu trạng thái toàn bộ câu sau MỖI lần sửa (clone)
+        self._history: list[list[Segment]] = []
+        self._history_index = -1
+        self._coalesce_key: tuple | None = None
+        self._last_snap_time = 0.0
         self._preview_version = 0
         self._preview_path: Path | None = None
         self._remix_running = False
@@ -332,6 +376,12 @@ class EditorPage(QtWidgets.QWidget):
         self.provider_badge.clicked.connect(lambda: self.inspector.setCurrentWidget(self.provider_tab))
         top.addWidget(self.provider_badge, 1)
         top.addStretch()
+        self.undo_button = tool_button("undo", "Hoàn tác (Ctrl+Z)", self.undo)
+        self.redo_button = tool_button("redo", "Làm lại (Ctrl+Y)", self.redo)
+        self.undo_button.setEnabled(False)
+        self.redo_button.setEnabled(False)
+        top.addWidget(self.undo_button)
+        top.addWidget(self.redo_button)
         stage_defs = [
             ("asr", "Nhận dạng", "mic", ["asr"]),
             ("translate", "Dịch", "translate", ["translate", "context"]),
@@ -558,6 +608,7 @@ class EditorPage(QtWidgets.QWidget):
         self.layer_panel.layersChanged.connect(self._on_layers_structure)
         self.layer_panel.layerChanged.connect(self._on_layer_edited)
         self.layer_panel.layerSelected.connect(self._select_layer)
+        self.layer_panel.fitTextRequested.connect(self._fit_cover_to_text)
         self.audio_panel.audioChanged.connect(self._on_audio)
         self.video_panel.changed.connect(self._on_video_settings)
         self.listen_mode.currentIndexChanged.connect(lambda _i: self._apply_audio_override(force=True))
@@ -577,6 +628,9 @@ class EditorPage(QtWidgets.QWidget):
         add("Alt+Left", lambda: self.seek(self.backend.position() - 3))
         add("Alt+Right", lambda: self.seek(self.backend.position() + 3))
         add("Ctrl+S", self.save_now)
+        add("Ctrl+Z", self.undo)
+        add("Ctrl+Y", self.redo)
+        add("Ctrl+Shift+Z", self.redo)
 
     def _player_text(self) -> str:
         text = f"Player: {self.backend.name}"
@@ -662,6 +716,7 @@ class EditorPage(QtWidgets.QWidget):
         self._bind_document(reset_player=True)
         self._load_waveform()
         self._update_lock()
+        self._reset_history()
 
     def _bind_document(self, reset_player: bool) -> None:
         doc = self.doc
@@ -676,7 +731,9 @@ class EditorPage(QtWidgets.QWidget):
         self.layer_panel.set_document(doc)
         self.audio_panel.set_document(doc)
         project = self.state.project
-        self.video_panel.set_document(doc, project.whisper_model if project else "")
+        self.video_panel.set_document(
+            doc, project.whisper_model if project else "", project.asr_engine if project else "whisper"
+        )
         self.translate_field.set_target(doc, on_save=lambda: self._on_provider_changed("translate"))
         self.tts_field.set_target(doc, on_save=lambda: self._on_provider_changed("tts"))
         self._update_provider_badge()
@@ -923,19 +980,78 @@ class EditorPage(QtWidgets.QWidget):
                 info_text = "Chưa có lồng tiếng"
         self.segment_panel.show_segment(seg, info_text)
 
+    def _refresh_clips_now(self) -> None:
+        if self.doc:
+            self.timeline.refresh_clips()
+
+    # ================================================================ undo / redo
+
+    def _reset_history(self) -> None:
+        self._history = []
+        self._history_index = -1
+        self._coalesce_key = None
+        self._snapshot()
+
+    def _snapshot(self, key: tuple | None = None) -> None:
+        """Lưu trạng thái câu hiện tại vào lịch sử. key ≠ None → gộp các lần sửa liên tiếp."""
+        now = time.monotonic()
+        if key is not None and key == self._coalesce_key and self._history and now - self._last_snap_time < 2.0:
+            self._history[self._history_index] = clone(self.segments)  # thay bản ghi đang gõ dở
+        else:
+            del self._history[self._history_index + 1:]  # huỷ nhánh redo
+            self._history.append(clone(self.segments))
+            if len(self._history) > 100:
+                del self._history[:50]
+            self._history_index = len(self._history) - 1
+        self._coalesce_key = key
+        self._last_snap_time = now
+        self._update_history_buttons()
+
+    def undo(self) -> None:
+        if self._history_index <= 0 or self.read_only:
+            return
+        self._history_index -= 1
+        self._apply_history()
+
+    def redo(self) -> None:
+        if self._history_index >= len(self._history) - 1 or self.read_only:
+            return
+        self._history_index += 1
+        self._apply_history()
+
+    def _apply_history(self) -> None:
+        self.segments = clone(self._history[self._history_index])
+        self.dirty = True
+        self.save_timer.start()
+        self.table.model_.set_segments(self.segments)
+        self.timeline.set_segments(self.segments)
+        self.canvas.set_segments(self.segments)
+        self.count_label.setText(f"{len(self.segments)} câu")
+        if self._selected_segment >= 0 and self._segment(self._selected_segment) is None:
+            self._selected_segment = -1
+        self._show_selected_segment()
+        self._clips_timer.start()
+        self.status_timer.start()
+        self._update_history_buttons()
+
+    def _update_history_buttons(self) -> None:
+        self.undo_button.setEnabled(self._history_index > 0)
+        self.redo_button.setEnabled(self._history_index < len(self._history) - 1)
+
     def _on_segment_edited(self, seg: Segment, field: str) -> None:
         if field in ("text", "voice", "speaker"):
             self.mark_dirty("tts")
         elif field in ("start", "end"):
             self.mark_dirty("mix")
             self.schedule_remix()
-            self.timeline.set_segments(self.segments)
+            self.timeline.set_segments(self.segments)  # đã tự tính lại clip bên trong
             self.canvas.set_segments(self.segments)
         elif field == "source":
             self.mark_dirty()
         self.table.model_.refresh_row(seg)
-        self.timeline.refresh_clips()
+        self._clips_timer.start()  # gộp lại: đỡ tính lại clip từng phím/lần sửa
         self.canvas.update()
+        self._snapshot((seg.id, field))
         if self.sender() is not self.segment_panel:
             self._show_selected_segment()
         self.status_timer.start()
@@ -948,6 +1064,7 @@ class EditorPage(QtWidgets.QWidget):
             if seg.id in ids:
                 self.table.model_.refresh_row(seg)
         self._show_selected_segment()
+        self._snapshot(("timeline", tuple(ids)))
 
     def segment_action(self, action: str, ids: list) -> None:
         if not self.doc:
@@ -966,6 +1083,12 @@ class EditorPage(QtWidgets.QWidget):
                 return
             self.clip_player.setSource(QtCore.QUrl.fromLocalFile(str(path)))
             self.clip_player.play()
+            return
+        if action == "preview_voice":
+            self._preview_voice(targets[0])
+            return
+        if action == "pick_voice":
+            self._pick_voice(targets[0])
             return
         if self.read_only:
             return
@@ -1008,6 +1131,7 @@ class EditorPage(QtWidgets.QWidget):
         self.count_label.setText(f"{len(self.segments)} câu")
         self._show_selected_segment()
         self.status_timer.start()
+        self._snapshot()
 
     def _renumber(self) -> None:
         self.segments.sort(key=lambda s: s.start)
@@ -1119,6 +1243,64 @@ class EditorPage(QtWidgets.QWidget):
         self.window().statusBar().showMessage(f"Đang tạo lồng tiếng {len(targets)} câu…")
         run_background(work, done, lambda msg: error(self, msg, "Lồng tiếng thất bại"))
 
+    def _voice_for(self, seg: Segment) -> tuple[object, str] | None:
+        """Provider TTS đang dùng + giọng của câu. None nếu chưa cấu hình."""
+        if not (self.doc and self.state.project):
+            return None
+        try:
+            resolved = tts_resolved(self._ctx(), self.doc)
+            provider = create_tts(resolved.profile)
+        except Exception:  # noqa: BLE001
+            return None
+        voice = resolve_voice(seg, self.state.load_context(), provider, resolved.value)
+        return provider, voice
+
+    def _preview_voice(self, seg: Segment) -> None:
+        """Nghe thử giọng sẽ dùng cho câu này — có câu của chính câu đang chọn."""
+        found = self._voice_for(seg)
+        if found is None:
+            info(self, "Chưa cấu hình provider TTS cho video này (tab Provider).")
+            return
+        provider, voice = found
+        text = (seg.text or seg.source).strip() or "Xin chào, đây là giọng đọc thử."
+        self.window().statusBar().showMessage(f"Đang tải mẫu nghe thử {voice}…")
+        from ...core.models import clone
+
+        snapshot = clone(provider.profile)
+        text = text[:300]
+
+        def work(_progress, _stop_event):
+            return create_tts(snapshot).preview(voice, text)
+
+        def done(path: Path) -> None:
+            self.window().statusBar().showMessage(f"Đang phát mẫu giọng {voice}", 4000)
+            self.clip_player.setSource(QtCore.QUrl.fromLocalFile(str(path)))
+            self.clip_player.play()
+
+        run_background(work, done, lambda msg: error(self, msg, "Không nghe thử được giọng"))
+
+    def _pick_voice(self, seg: Segment) -> None:
+        found = self._voice_for(seg)
+        if found is None:
+            info(self, "Chưa cấu hình provider TTS cho video này (tab Provider).")
+            return
+        provider, voice = found
+        from ...core.models import clone
+        from ..widgets.voice_picker import open_voice_picker
+
+        open_voice_picker(
+            self, clone(provider.profile), voice,
+            preview_text=(seg.text or seg.source).strip()[:300],
+            on_done=lambda voice_id: self._apply_segment_voice(seg, voice_id),
+        )
+
+    def _apply_segment_voice(self, seg: Segment, voice_id: str) -> None:
+        if seg.voice == voice_id:
+            return
+        seg.voice = voice_id
+        self._after_bulk_edit("tts")
+        self.window().statusBar().showMessage(f"Đã đổi giọng câu #{seg.id} → {voice_id}", 4000)
+
     def _refresh_tts_status(self) -> None:
         if not (self.doc and self.state.store and self.state.project):
             return
@@ -1221,6 +1403,44 @@ class EditorPage(QtWidgets.QWidget):
         self.canvas.invalidate_images()
         self.canvas.update()
 
+    def _fit_cover_to_text(self, layer_id: str) -> None:
+        """Dò chữ cứng gốc trong khung hình đang phát rồi co vùng che vừa khớp."""
+        doc = self.doc
+        layer = next((l for l in (doc.layers if doc else []) if l.id == layer_id), None)
+        if doc is None or layer is None:
+            return
+        if not doc.source_path or not Path(doc.source_path).exists():
+            info(self, "Không tìm thấy file video để dò chữ gốc.")
+            return
+        at = self.backend.position()
+        self.window().statusBar().showMessage("Đang dò vùng chữ gốc trong khung hình…")
+
+        def work(_progress, _stop):
+            return detect_text_region(doc.source_path, at)
+
+        def done(rect) -> None:
+            layer_now = next((l for l in (self.doc.layers if self.doc else []) if l.id == layer_id), None)
+            if layer_now is None:
+                return
+            if rect is None:
+                self.window().statusBar().showMessage(
+                    "Không dò thấy chữ ở nửa dưới khung hình — có thể lúc này chưa có phụ đề, thử thời điểm khác.", 6000
+                )
+                return
+            x, y, w, h = rect
+            pad_x, pad_y = 0.012, 0.008
+            layer_now.x = max(0.0, x - pad_x)
+            layer_now.y = max(0.0, y - pad_y)
+            layer_now.w = min(1.0, x + w + pad_x) - layer_now.x
+            layer_now.h = min(1.0, y + h + pad_y) - layer_now.y
+            self.mark_dirty("render")
+            self.layer_panel.reload_geometry(layer_id)
+            self.layer_panel.sync_item(layer_id)
+            self.canvas.update()
+            self.window().statusBar().showMessage(f"Đã khớp vùng che với chữ gốc tại {format_clock(at)}", 5000)
+
+        run_background(work, done, lambda msg: error(self, msg, "Dò chữ gốc thất bại"))
+
     def _on_style(self, style: SubtitleStyle) -> None:
         if not self.doc:
             return
@@ -1262,10 +1482,13 @@ class EditorPage(QtWidgets.QWidget):
         if field == "export_srt":
             self._export_srt()
             return
+        if field == "import_srt":
+            self._import_srt()
+            return
         if field == "flip":
             self.mark_dirty("render")
             self.canvas.update()
-        elif field in ("mode", "srt", "language", "whisper"):
+        elif field in ("mode", "srt", "language", "whisper", "moonshine", "asr_engine"):
             self.mark_dirty("asr")
         elif field == "source":
             self.mark_dirty("asr")
@@ -1290,6 +1513,74 @@ class EditorPage(QtWidgets.QWidget):
         items = [(s.start, s.end, s.display_text() if use_text else s.source) for s in sorted(self.segments, key=lambda s: s.start)]
         Path(path).write_text(render_srt(i for i in items if i[2]), encoding="utf-8")
         self.window().statusBar().showMessage(f"Đã lưu {path}", 4000)
+
+    def _import_srt(self) -> None:
+        """Nhập file SRT đã dịch ở ngoài (Google Dịch, tool khác…) — khỏi chạy lại bước Dịch."""
+        if not self.doc or self.read_only:
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Nhập phụ đề đã dịch", "", "SRT (*.srt);;Tất cả (*.*)")
+        if not path:
+            return
+        try:
+            items = parse_srt(Path(path).read_text(encoding="utf-8-sig"))
+        except Exception as exc:  # noqa: BLE001
+            QtWidgets.QMessageBox.warning(self, "Nhập SRT", f"Không đọc được file:\n{exc}")
+            return
+        if not items:
+            QtWidgets.QMessageBox.warning(self, "Nhập SRT", "File không có câu nào.")
+            return
+        if not self.segments:
+            QtWidgets.QMessageBox.warning(self, "Nhập SRT", "Video chưa có câu nào — hãy chạy Nhận dạng trước.")
+            return
+        as_text = confirm(self, "Nhập SRT", "Điền vào BẢN DỊCH của các câu? (Chọn No để điền vào CÂU GỐC)")
+        segments = sorted(self.segments, key=lambda s: s.start)
+        picks = match_translation(items, [(s.start, s.end) for s in segments])
+        matched = sum(p is not None for p in picks)
+        if segments and matched * 2 < len(segments) and len(items) == len(segments):
+            # mốc giờ lệch hết (file dịch bị dời giờ / lệch phách) → ghép theo thứ tự dòng
+            text = (
+                f"Mốc giờ trong file lệch so với video (ghép được {matched}/{len(segments)} câu theo giờ).\n"
+                "Ghép theo THỨ TỰ DÒNG thay vì giờ?"
+            )
+            if confirm(self, "Nhập SRT", text):
+                picks = list(range(len(segments)))
+            else:
+                return
+        if all(p is None for p in picks):
+            QtWidgets.QMessageBox.warning(self, "Nhập SRT", "Không ghép được câu nào — file có thể của video khác.")
+            return
+        overwrite = True
+        if as_text and any(s.text for s in segments):
+            overwrite = confirm(self, "Nhập SRT", "Một số câu đã có bản dịch. Ghi đè hết? (Chọn No để chỉ điền câu trống)")
+        filled: list[Segment] = []
+        for seg, index in zip(segments, picks):
+            if index is None:
+                continue
+            value = items[index][2].strip()
+            if not value:
+                continue
+            if as_text:
+                if seg.text and not overwrite:
+                    continue
+                seg.text = value
+            else:
+                seg.source = value
+            filled.append(seg)
+        if not filled:
+            QtWidgets.QMessageBox.warning(self, "Nhập SRT", "Không có câu nào để điền vào.")
+            return
+        if as_text:
+            self.doc.set_stage("translate", STATE_DONE)  # coi như bước Dịch đã xong
+            self.mark_dirty("tts")
+        else:
+            self.mark_dirty("translate")
+        for seg in filled:
+            self.table.model_.refresh_row(seg)
+        self.timeline.set_segments(self.segments)
+        self.canvas.set_segments(self.segments)
+        self.window().statusBar().showMessage(
+            f"Đã nhập {len(filled)}/{len(segments)} câu từ {Path(path).name}", 6000
+        )
 
     def _refresh_presets(self) -> None:
         presets = self.state.settings.subtitle_presets

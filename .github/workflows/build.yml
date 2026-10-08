@@ -1,4 +1,4 @@
-# CI cho ReviewTrans Studio (Windows)
+# CI cho ThanhDub (Windows)
 #
 #  - Pull request        → chỉ chạy test.
 #  - Merge/push vào main → test + đóng gói + TỰ TẠO RELEASE:
@@ -220,7 +220,7 @@ jobs:
       - name: Tải lên Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ReviewTrans-${{ steps.version.outputs.value }}
+          name: ThanhDub-${{ steps.version.outputs.value }}
           path: |
             release/*.exe
             release/*.zip
@@ -253,7 +253,7 @@ jobs:
               $global:LASTEXITCODE = 0
               $extra = @()
               if ($version.Contains("-")) { $extra += "--prerelease" } else { $extra += "--latest" }
-              gh release create $tag @files --target "${{ github.sha }}" --title "ReviewTrans Studio $version" --generate-notes @extra
+              gh release create $tag @files --target "${{ github.sha }}" --title "ThanhDub $version" --generate-notes @extra
             }
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

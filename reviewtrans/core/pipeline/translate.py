@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..config import ProviderProfile
-from ..context import UPDATE_SYSTEM, build_update_prompt, context_block, extract_json, glossary_pairs, merge_update
+from ..context import UPDATE_SYSTEM, build_update_prompt, context_block, context_dict, extract_json, glossary_pairs, merge_update
 from ..models import Segment, VideoDoc
 from ..providers import ProviderError
 from ..providers.translate import TranslateJob, Translator, create_translator
@@ -102,8 +102,9 @@ def update_context(ctx: RunContext, doc: VideoDoc, segments: list[Segment]) -> l
         data = extract_json(raw)
     except ValueError as exc:
         raise ProviderError(f"Không đọc được JSON ngữ cảnh: {raw[:200]}") from exc
+    data = context_dict(data)
     if not isinstance(data, dict):
-        raise ProviderError("LLM trả về ngữ cảnh không đúng định dạng.")
+        raise ProviderError(f"LLM trả về ngữ cảnh không đúng định dạng: {str(data)[:300]}")
     # đọc lại ngay trước khi gộp để giữ các sửa tay mới nhất
     context = ctx.store.load_context()
     changes = merge_update(context, data, doc.name)

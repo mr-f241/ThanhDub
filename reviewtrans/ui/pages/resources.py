@@ -4,15 +4,23 @@ from PyQt6 import QtCore, QtWidgets
 
 from ...core.paths import fonts_dir, user_data_dir
 from ...core.pipeline.resources import (
+    KNOWN_MOONSHINE_MODELS,
     KNOWN_WHISPER_MODELS,
+    delete_moonshine_model,
     download_ffmpeg,
     download_libmpv,
     download_whisper_binaries,
     download_whisper_cuda,
     download_whisper_vulkan,
+    downloaded_moonshine_models,
     downloaded_whisper_models,
+    ensure_moonshine_model,
     ensure_whisper_model,
     fetch_whisper_models,
+    install_moonshine_deps,
+    moonshine_label,
+    moonshine_model_size,
+    moonshine_runtime,
     tool_status,
     whisper_model_path,
 )
@@ -30,7 +38,7 @@ TOOLS = [
      "ASR bằng GPU NVIDIA (GTX 900 trở lên), nhanh gấp nhiều lần CPU. Gói ≈270 MB (RTX 40/50: ≈680 MB).",
      download_whisper_cuda),
     ("whisper-vulkan", "whisper.cpp Vulkan (AMD / Intel / NVIDIA)",
-     "ASR bằng mọi GPU có driver Vulkan. Bản do ReviewTrans tự build (whisper.cpp không phát hành cho Windows).",
+     "ASR bằng mọi GPU có driver Vulkan. Bản do ThanhDub tự build (whisper.cpp không phát hành cho Windows).",
      download_whisper_vulkan),
     ("libmpv", "libmpv (player)", "Player mượt, seek chính xác, xem trước blur thật. Không có sẽ dùng Qt Multimedia.", download_libmpv),
 ]
@@ -87,6 +95,35 @@ class ResourcesPage(QtWidgets.QWidget):
         models_layout.addWidget(hint("Gợi ý: small/medium cho máy thường, large-v3-turbo cho độ chính xác cao. Bản -q5 nhẹ hơn."))
         layout.addWidget(models_box, 1)
 
+        moon_box = QtWidgets.QGroupBox("Moonshine (bộ nhận dạng thay thế)")
+        moon_layout = QtWidgets.QVBoxLayout(moon_box)
+        top = QtWidgets.QHBoxLayout()
+        self.moon_runtime = QtWidgets.QLabel()
+        self.moon_runtime.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        top.addWidget(self.moon_runtime, 1)
+        top.addWidget(push_button("Cài torch + transformers", self.install_moonshine, "download"))
+        moon_layout.addLayout(top)
+        self.moon_models = QtWidgets.QTableWidget(0, 4)
+        self.moon_models.setHorizontalHeaderLabels(["Model", "Ngôn ngữ", "Trạng thái", "Dung lượng"])
+        self.moon_models.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.moon_models.verticalHeader().setVisible(False)
+        self.moon_models.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.moon_models.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        moon_layout.addWidget(self.moon_models)
+        moon = QtWidgets.QHBoxLayout()
+        moon.addWidget(push_button("Tải model Moonshine đã chọn", self.download_moonshine, "download", "Primary"))
+        moon.addWidget(push_button("Xoá model Moonshine đã chọn", self.delete_moonshine, "delete"))
+        self.moon_progress = QtWidgets.QProgressBar()
+        self.moon_progress.setVisible(False)
+        moon.addWidget(self.moon_progress, 1)
+        moon_layout.addLayout(moon)
+        moon_layout.addWidget(hint(
+            "Moonshine nhỏ hơn whisper.cpp nhiều lần nhưng chỉ có model cho 7 ngôn ngữ "
+            "(Anh, Trung, Việt, Nhật, Hàn, Ả Rập, Ukraine) và ngôn ngữ nằm sẵn trong model. "
+            "Chọn bộ nhận dạng ở Cài đặt hoặc trong từng project."
+        ))
+        layout.addWidget(moon_box, 1)
+
         storage = QtWidgets.QGroupBox("Lưu trữ")
         storage_layout = QtWidgets.QHBoxLayout(storage)
         self.cache_label = QtWidgets.QLabel()
@@ -98,6 +135,7 @@ class ResourcesPage(QtWidgets.QWidget):
         layout.addWidget(storage)
 
         self._all_models = list(KNOWN_WHISPER_MODELS)
+        self._all_moonshine = list(KNOWN_MOONSHINE_MODELS)
         self.refresh()
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -126,6 +164,22 @@ class ResourcesPage(QtWidgets.QWidget):
             for col, text in enumerate([model, "Đã tải" if have else "", human_size(path.stat().st_size) if have else ""]):
                 item = QtWidgets.QTableWidgetItem(text)
                 self.models.setItem(row, col, item)
+        self.refresh_moonshine()
+
+    def refresh_moonshine(self) -> None:
+        ok, missing = moonshine_runtime()
+        self.moon_runtime.setText(
+            "<b>torch + transformers:</b> " + ("<span style='color:#5ec269'>đã có</span>" if ok
+                                              else f"<span style='color:#e0b040'>chưa có ({missing})</span>")
+        )
+        downloaded = set(downloaded_moonshine_models())
+        models = sorted(set(self._all_moonshine) | downloaded)
+        self.moon_models.setRowCount(len(models))
+        for row, model in enumerate(models):
+            have = model in downloaded
+            size = human_size(moonshine_model_size(model)) if have else ""
+            for col, text in enumerate([moonshine_label(model), "", "Đã tải" if have else "", size]):
+                self.moon_models.setItem(row, col, QtWidgets.QTableWidgetItem(text))
 
     def download_tool(self, key: str, fn) -> None:
         bar = self.tool_progress[key]
@@ -183,6 +237,62 @@ class ResourcesPage(QtWidgets.QWidget):
         path = whisper_model_path(model)
         if model and path.exists() and confirm(self, "Xoá model", f"Xoá {path.name}?"):
             path.unlink()
+            self.refresh()
+
+    # -------------------------------------------------------------- moonshine
+
+    def install_moonshine(self) -> None:
+        self.moon_progress.setVisible(True)
+        self.moon_progress.setValue(0)
+
+        def done(message) -> None:
+            self.moon_progress.setVisible(False)
+            self.refresh()
+            self.window().statusBar().showMessage(message, 10000)
+
+        def fail(message: str) -> None:
+            self.moon_progress.setVisible(False)
+            error(self, message, "Cài Moonshine thất bại")
+
+        run_background(
+            lambda progress, stop: install_moonshine_deps(progress, stop), done, fail,
+            lambda pct, _m: self.moon_progress.setValue(int(pct)),
+        )
+
+    def _selected_moonshine(self) -> str:
+        row = self.moon_models.currentRow()
+        item = self.moon_models.item(row, 0) if row >= 0 else None
+        if item is None:
+            return ""
+        for model in self._all_moonshine + downloaded_moonshine_models():
+            if item.text().startswith(moonshine_label(model)):
+                return model
+        return ""
+
+    def download_moonshine(self) -> None:
+        model = self._selected_moonshine()
+        if not model:
+            return
+        self.moon_progress.setVisible(True)
+        self.moon_progress.setValue(0)
+
+        def done(_path) -> None:
+            self.moon_progress.setVisible(False)
+            self.refresh()
+
+        def fail(message: str) -> None:
+            self.moon_progress.setVisible(False)
+            error(self, message)
+
+        run_background(
+            lambda progress, stop: ensure_moonshine_model(model, progress, stop), done, fail,
+            lambda pct, _m: self.moon_progress.setValue(int(pct)),
+        )
+
+    def delete_moonshine(self) -> None:
+        model = self._selected_moonshine()
+        if model and confirm(self, "Xoá model Moonshine", f"Xoá {moonshine_label(model)}?"):
+            delete_moonshine_model(model)
             self.refresh()
 
     def compute_cache(self) -> None:

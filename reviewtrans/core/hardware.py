@@ -59,6 +59,10 @@ ASR_DEVICES = [
     ("vulkan", "Vulkan (AMD / Intel / NVIDIA)"),
     ("cpu", "Chỉ CPU"),
 ]
+ASR_ENGINES = [
+    ("whisper", "whisper.cpp — nhiều ngôn ngữ, chạy CPU/CUDA/Vulkan"),
+    ("moonshine", "Moonshine — rất nhanh, model riêng theo ngôn ngữ"),
+]
 WHISPER_VARIANT_DIRS = {"cuda": "whisper-cuda", "vulkan": "whisper-vulkan"}
 VARIANT_NAMES = {"cuda": "CUDA", "vulkan": "Vulkan", "cpu": "CPU"}
 

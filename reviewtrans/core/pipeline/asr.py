@@ -10,7 +10,13 @@ from ..models import Segment, VideoDoc
 from ..proc import StopRequested, ToolMissing, probe, require_tool, run, run_checked
 from ..srt import parse_srt
 from . import RunContext
-from .resources import ensure_whisper_model
+from .asr_moonshine import run_moonshine
+from .resources import (
+    ensure_whisper_model,
+    moonshine_label,
+    moonshine_language,
+    suggest_moonshine_model,
+)
 
 _PROGRESS = re.compile(r"progress\s*=\s*(\d+)%")
 _GPU_LINE = re.compile(r"(ggml_vulkan: \d+ = .+|ggml_cuda_init: .+|Device \d+: .+|using (?:CUDA|Vulkan)\d* backend|no GPU found)", re.I)
@@ -51,12 +57,28 @@ def run_asr(ctx: RunContext, doc: VideoDoc) -> list[Segment]:
         ctx.log(f"Đọc {len(items)} câu từ {doc.srt_path}")
         return [Segment(id=i + 1, start=s, end=e, source=t) for i, (s, e, t) in enumerate(items)]
 
+    audio = extract_audio(ctx, doc)
+    engine = doc.asr_engine or ctx.project.asr_engine or ctx.settings.asr_engine
+    if engine == "moonshine":
+        language = doc.source_language or ctx.project.source_language
+        model = doc.moonshine_model or ctx.project.moonshine_model
+        if not model:
+            # Chưa chọn model cụ thể → gợi ý theo ngôn ngữ nguồn. Lùi về model mặc định
+            # (tiếng Anh) khi ngôn ngữ không có bản riêng. Nếu không, Moonshine nghe tiếng
+            # lạ sẽ lặp lại một cụm vô nghĩa thay vì im lặng.
+            model = suggest_moonshine_model(language) or ctx.settings.default_moonshine_model
+            if language and moonshine_language(model) != language.split("-")[0]:
+                ctx.log(
+                    f"Moonshine: dùng {moonshine_label(model)} cho nguồn {language} "
+                    f"(model mặc định là {moonshine_language(ctx.settings.default_moonshine_model)})."
+                )
+        return run_moonshine(ctx, audio, model)
+
     model = doc.whisper_model or ctx.project.whisper_model or ctx.settings.default_whisper_model
     language = whisper_code(doc.source_language or ctx.project.source_language)
     model_path = ensure_whisper_model(
         model, lambda pct, msg: ctx.progress(pct * 0.1, msg), ctx.stop_event
     )
-    audio = extract_audio(ctx, doc)
     out_prefix = ctx.store.cache_dir(doc.id) / "asr"
 
     plan = whisper_plan(ctx.settings.asr_device, load_cached())

@@ -69,6 +69,23 @@ UPDATE_SYSTEM = (
 )
 
 
+def name_rule(target_lang: str) -> str:
+    """Quy tắc dựng tên riêng — riêng tiếng Việt phải theo âm Hán Việt, không trộn pinyin.
+
+    Trả về "" với ngôn ngữ mục tiêu khác tiếng Việt (quy tắc đọc âm Hán Việt vô nghĩa ở đó).
+    """
+    if english_name(target_lang) != "Vietnamese":
+        return ""
+    return (
+        "NAME RULE (Chinese personal names): every hanzi in a name is read with its standard "
+        "Sino-Vietnamese syllable, then the syllables are joined — "
+        '萧长 → "Tiêu Trường", 林凡 → "Lâm Phàm", 楚天翼 → "Sở Thiên Dực". '
+        "Never mix Mandarin pinyin syllables (Xiao, Chang, Lin, Chu, Wang…) into a Vietnamese "
+        "name, never spell a name the Mandarin way, and never translate what its characters mean. "
+        "A name already present in PROJECT CONTEXT is authoritative — copy it exactly.\n"
+    )
+
+
 def build_update_prompt(
     context: ProjectContext,
     segments: list[Segment],
@@ -91,6 +108,12 @@ def build_update_prompt(
         ],
         "glossary": [{"source": g.source, "target": g.target, "note": g.note} for g in context.glossary],
     }
+    rule = name_rule(target_lang)
+    name_line = (
+        '"target" of characters and of glossary entries must follow this rule:\n' + rule
+        if rule
+        else ""
+    )
     return (
         f"Source language: {english_name(source_lang)}. Target language: {english_name(target_lang)}.\n"
         f"Episode: {video_name}\n\n"
@@ -108,25 +131,83 @@ def build_update_prompt(
         "how this character refers to themselves and to others (pronouns / honorifics).\n"
         '- "glossary": list of NEW recurring proper nouns or terms {"source","target","note"} '
         "(places, sects, techniques, items, titles). Skip common words.\n"
-        "Keep names consistent with the existing context. Output JSON only."
+        + name_line
+        + "Keep names consistent with the existing context. Output JSON only."
     )
 
 
+CONTEXT_KEYS = ("summary", "style_notes", "characters", "glossary")
+# trường chỉ có ở nhân vật — dùng để phân biệt với thuật ngữ khi model trả mảng trần
+CHARACTER_ONLY_KEYS = ("gender", "role", "addressing")
+
+
+def _is_glossary_item(item: dict) -> bool:
+    """Mục có 'note' mà không có trường nhân vật thì là thuật ngữ."""
+    if any(str(item.get(k) or "").strip() for k in CHARACTER_ONLY_KEYS):
+        return False
+    return bool(str(item.get("note") or "").strip())
+
+
+def context_dict(data):
+    """Chuẩn hoá về dict cho ngữ cảnh.
+
+    Model hay tuột kiểu mẫu, trả về lệch dạng:
+    - bọc object đúng nghĩa trong mảng ``[{...}]``
+    - trả thẳng mảng mục ``[{"source": ...}, ...]`` (mất object bọc)
+    - hoặc mảng object rỗng ``[{"characters": [...]}, {"glossary": [...]}]``
+    """
+    if isinstance(data, list):
+        if not data:
+            return {}  # không có gì mới -> merge_update coi như không thay đổi
+        dicts = [x for x in data if isinstance(x, dict)]
+        if len(dicts) != len(data):
+            return data  # lẫn kiểu lạ -> để update_context báo lỗi kèm dữ liệu
+        # object đã đúng dạng, chỉ bị bọc nhầm trong mảng
+        proper = [it for it in dicts if any(k in it for k in CONTEXT_KEYS)]
+        if proper:
+            merged: dict = {}
+            for item in proper:
+                merged.update(item)
+            return merged if len(proper) > 1 else proper[0]
+        # mảng mục đơn lẻ: chỉ nhận khi trông như mục ngữ cảnh (có "source")
+        if not all("source" in it for it in dicts):
+            return data
+        characters = [it for it in dicts if not _is_glossary_item(it)]
+        glossary = [it for it in dicts if _is_glossary_item(it)]
+        out: dict = {}
+        if characters:
+            out["characters"] = characters
+        if glossary:
+            out["glossary"] = glossary
+        return out
+    if isinstance(data, dict) and "source" in data and not any(
+        k in data for k in CONTEXT_KEYS
+    ):
+        return context_dict([data])  # {"source": ...} lẻ tẻ
+    return data
+
+
 def extract_json(text: str):
-    """Lấy JSON đầu tiên trong câu trả lời của LLM (bỏ ```json ...```)."""
+    """Lấy JSON đầu tiên trong câu trả lời của LLM (bỏ ```json ...``` và chữ "json" thừa)."""
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if fence:
         text = fence.group(1).strip()
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = text.find(opener)
+    # model nhỏ hay in thêm "json" / "JSON:" ngay trước mảng
+    text = re.sub(r"^(?:json|JSON)\s*[:：]?\s*", "", text).strip()
+    # cắt theo opener SỚM NHẤT: mảng đứng trước object thì phải lấy theo mảng,
+    # nếu không sẽ cắt mất ngoặc mở và hỏng JSON
+    starts = [(text.find(opener), opener, closer) for opener, closer in (("{", "}"), ("[", "]")) if opener in text]
+    for start, opener, closer in sorted(starts):
         end = text.rfind(closer)
-        if start != -1 and end > start:
-            candidate = text[start:end + 1]
+        if end > start:
             try:
-                return json.loads(candidate)
+                return json.loads(text[start:end + 1])
             except json.JSONDecodeError:
                 continue
+    # model viết {"id": 1, …}, {"id": 2, …} (quên ngoặc mảng) → bọc lại
+    if text.startswith("{") and "}," in text.replace(" ", ""):
+        return json.loads(f"[{text}]")
     return json.loads(text)
 
 

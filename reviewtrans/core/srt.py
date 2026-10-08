@@ -27,6 +27,28 @@ def parse_srt(content: str) -> list[tuple[float, float, str]]:
     return items
 
 
+def match_translation(items: list[tuple[float, float, str]], targets: list[tuple[float, float]]) -> list[int | None]:
+    """Ghép từng dòng SRT đã dịch vào câu (start, end) của video.
+
+    Ưu tiên dòng trùng thời gian với câu; file có đúng bằng số câu thì lấp chỗ
+    còn trống theo thứ tự (phần mềm dịch thường giữ nguyên số dòng và mốc giờ).
+    Trả về list index của `items` cho từng câu, None = không ghép được.
+    """
+    picks: list[int | None] = []
+    for start, end in targets:
+        best, best_overlap = None, 0.0
+        for index, (item_start, item_end, _text) in enumerate(items):
+            overlap = min(end, item_end) - max(start, item_start)
+            if overlap > best_overlap:
+                best, best_overlap = index, overlap
+        picks.append(best)
+    if len(items) == len(targets):
+        for index, picked in enumerate(picks):
+            if picked is None:
+                picks[index] = index
+    return picks
+
+
 def format_timestamp(seconds: float, sep: str = ",") -> str:
     seconds = max(0.0, seconds)
     millis = int(round(seconds * 1000))

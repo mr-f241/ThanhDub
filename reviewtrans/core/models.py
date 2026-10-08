@@ -237,6 +237,8 @@ class VideoDoc:
     source_mode: str = "asr"  # asr | srt
     srt_path: str = ""
     whisper_model: str = ""  # trống = theo project
+    moonshine_model: str = ""  # trống = theo project
+    asr_engine: str = ""  # trống = theo project (whisper | moonshine)
     source_language: str = ""  # trống = theo project
     # provider riêng cho video (trống = kế thừa project → mặc định)
     translate_profile: str = ""
@@ -303,6 +305,8 @@ class Project:
     tts_profile: str = ""
     tts_voice: str = ""
     whisper_model: str = "small"
+    moonshine_model: str = ""
+    asr_engine: str = "whisper"  # whisper | moonshine
     instructions: str = ""
     output_dir: str = ""
     template: VideoTemplate = field(default_factory=VideoTemplate)

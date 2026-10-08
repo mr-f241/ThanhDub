@@ -1,5 +1,5 @@
 @echo off
-REM Build ReviewTrans Studio tren may ca nhan: ra installer + zip portable trong thu muc release\
+REM Build ThanhDub tren may ca nhan: ra installer + zip portable trong thu muc release\
 REM Vi du:  build.cmd                      (ban day du)
 REM         build.cmd --version 2.1.0
 REM         build.cmd --no-libmpv --skip-installer

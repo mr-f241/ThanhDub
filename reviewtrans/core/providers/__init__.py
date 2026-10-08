@@ -7,6 +7,25 @@ class ProviderError(RuntimeError):
     pass
 
 
+class FatalProviderError(ProviderError):
+    """Lỗi cấu hình (thiếu key, sai engine, unsupported ngôn ngữ) — thử lại cũng vậy, báo ngay."""
+
+
+class NoAudioError(ProviderError):
+    """Edge trả về audio rỗng — thường do bị Microsoft limit tạm, phải nghỉ ~20s mới qua."""
+
+
+def retry_delay(attempt: int, exc: Exception) -> float:
+    """Đợi giữa hai lần thử lại: 429/quota thì chờ lâu hẳn, lỗi thường thì thử lại nhanh."""
+    text = str(exc).lower()
+    rate_limited = any(
+        token in text
+        for token in ("429", "too many requests", "rate limit", "quota", "overloaded", "resource has been exhausted")
+    )
+    base = 5.0 if rate_limited else 1.5
+    return min(60.0, base * (2 ** attempt))
+
+
 class KeyRing:
     """Xoay vòng nhiều API key (tránh giới hạn quota)."""
 

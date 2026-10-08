@@ -181,6 +181,22 @@ def build_render_plan(
             parts.append(f"{current}subtitles={fonts}filename=subs.ass{label}")
             current = label
 
+    # khung xuất theo mẫu (Cài đặt → Xuất video → Khung xuất)
+    export_preset = getattr(render, "export_preset", "none") or "none"
+    if export_preset == "tiktok":
+        crop_w = max(2, int(height * 9 / 16) // 2 * 2)
+        label = next_label()
+        parts.append(f"{current}crop={crop_w}:{height},scale=1080:1920{label}")
+        current = label
+    elif export_preset == "1080p" and height > 1080:
+        label = next_label()
+        parts.append(f"{current}scale=-2:1080{label}")
+        current = label
+    elif export_preset == "720p" and height > 720:
+        label = next_label()
+        parts.append(f"{current}scale=-2:720{label}")
+        current = label
+
     label = "[vout]"
     parts.append(f"{current}{encoder.tail}{label}")
     graph = ";".join(parts)

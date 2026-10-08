@@ -6,17 +6,29 @@ from pathlib import Path
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ...core.config import LLM_KINDS
+from ...core.hardware import ASR_ENGINES
 from ...core.langs import SOURCE_LANGUAGES, TARGET_LANGUAGES, display_name
 from ...core.models import STAGE_LABELS, STAGES, Character, GlossaryEntry, ProjectContext
-from ...core.pipeline.resources import KNOWN_WHISPER_MODELS, downloaded_whisper_models
+from ...core.pipeline.resources import (
+    KNOWN_MOONSHINE_MODELS,
+    KNOWN_WHISPER_MODELS,
+    MOONSHINE_LANGUAGES,
+    downloaded_moonshine_models,
+    downloaded_whisper_models,
+    moonshine_label,
+    moonshine_language,
+    moonshine_runtime,
+    suggest_moonshine_model,
+)
 from ...core.pipeline.runner import STEP_LABELS
 from ...core.proc import probe
+from ...core.resolve import resolve
 from ...core.srt import format_clock
 from ...core.store import ProjectStore
 from ..icons import icon
 from ..jobs import run_background
 from ..state import AppState
-from ..theme import STATE_COLORS, TEXT_DIM
+from ..theme import STATE_COLORS, TEXT_DIM, WARNING
 from ..widgets.provider_field import ProviderField
 from ..widgets.common import (
     VIDEO_FILTER,
@@ -541,9 +553,16 @@ class ProjectSettingsTab(QtWidgets.QWidget):
         asr = QtWidgets.QGroupBox("Nhận dạng giọng nói")
         form = form_layout()
         asr.setLayout(form)
+        self.asr_engine = ComboBox(ASR_ENGINES)
         self.whisper = ComboBox()
         self.whisper.setEditable(True)
+        self.moonshine = ComboBox()
+        self.moonshine.setEditable(True)
+        self.moonshine_hint = hint("")
+        form.addRow("Bộ nhận dạng", self.asr_engine)
         form.addRow("Model Whisper", self.whisper)
+        form.addRow("Model Moonshine", self.moonshine)
+        form.addRow("", self.moonshine_hint)
         layout.addWidget(asr)
         layout.addWidget(hint(
             "Thứ tự ưu tiên provider: video (tab Provider trong Editor) > project (ở đây) > mặc định (trang Providers). "
@@ -560,6 +579,8 @@ class ProjectSettingsTab(QtWidgets.QWidget):
             combo.currentIndexChanged.connect(self.commit)
         self.commit_timer = QtCore.QTimer(self, singleShot=True, interval=600, timeout=self.commit)
         self.whisper.currentTextChanged.connect(self._commit_later)
+        self.moonshine.currentTextChanged.connect(self._commit_later)
+        self.asr_engine.currentIndexChanged.connect(self._commit_later)
         self.auto_context.toggled.connect(self.commit)
         self.output_dir.changed.connect(self.commit)
         self.instructions.textChanged.connect(self._commit_later)
@@ -598,7 +619,30 @@ class ProjectSettingsTab(QtWidgets.QWidget):
         models = sorted(set(downloaded_whisper_models() + KNOWN_WHISPER_MODELS))
         self.whisper.set_items([(m, m) for m in models], keep=False)
         self.whisper.setEditText(project.whisper_model)
+        moon = sorted(set(downloaded_moonshine_models() + KNOWN_MOONSHINE_MODELS),
+                      key=lambda m: (not m.endswith(("zh", "vi")), m))
+        self.moonshine.set_items([(m, moonshine_label(m)) for m in moon], keep=False)
+        self.moonshine.setEditText(project.moonshine_model or suggest_moonshine_model(project.source_language))
+        self.asr_engine.set_value(project.asr_engine or settings.asr_engine or "whisper")
+        self.sync_engine()
         self._loading = False
+
+    def sync_engine(self) -> None:
+        """Bật/ẩn ô model theo bộ nhận dạng đang chọn và báo trạng thái Moonshine."""
+        project = self.state.project
+        moonshine = self.asr_engine.value() == "moonshine"
+        self.whisper.setEnabled(not moonshine)
+        self.moonshine.setEnabled(moonshine)
+        if not moonshine:
+            self.moonshine_hint.setText("")
+            return
+        ok, missing = moonshine_runtime()
+        model = self.moonshine.currentText().strip()
+        note = "" if ok else f" Chưa cài torch/transformers ({missing}) — vào trang Tài nguyên."
+        source = (project.source_language or "").split("-")[0] if project else ""
+        if model and source and source in MOONSHINE_LANGUAGES and moonshine_language(model) != source:
+            note += f" Ngôn ngữ nguồn là {display_name(project.source_language)} → có thể dùng {moonshine_label(suggest_moonshine_model(project.source_language))}."
+        self.moonshine_hint.setText(note)
 
     def commit(self, *_args) -> None:
         project = self.state.project
@@ -613,14 +657,96 @@ class ProjectSettingsTab(QtWidgets.QWidget):
         project.context_auto_update = self.auto_context.isChecked()
         project.instructions = self.instructions.toPlainText().strip()
         project.whisper_model = self.whisper.currentText().strip() or "small"
+        project.moonshine_model = self.moonshine.currentText().strip()
+        project.asr_engine = self.asr_engine.value() or "whisper"
         self.state.save_project()
+
+class QueueBar(QtWidgets.QFrame):
+    """Dashboard nhỏ: việc đang chạy + số việc chờ ngay trên trang Project."""
+
+    def __init__(self, state: AppState, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.setObjectName("Panel")
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+        self.label = QtWidgets.QLabel("Hàng đợi trống")
+        self.label.setStyleSheet(f"color: {TEXT_DIM};")
+        layout.addWidget(self.label, 1)
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setFixedWidth(140)
+        self.progress.setRange(0, 1000)
+        self.progress.setTextVisible(False)
+        self.progress.hide()
+        layout.addWidget(self.progress)
+        layout.addWidget(push_button("Hàng đợi", lambda: self.state.navigateRequested.emit("queue"), "queue"))
+        jobs = state.jobs
+        jobs.jobAdded.connect(lambda _j: self.refresh())
+        jobs.jobChanged.connect(lambda _j: self.refresh())
+        jobs.busyChanged.connect(lambda _b: self.refresh())
+        jobs.videoLocksChanged.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self) -> None:
+        jobs = self.state.jobs
+        current = jobs.current()
+        pending = sum(1 for j in jobs.jobs if j.state == "pending")
+        if current is None:
+            self.progress.hide()
+            self.label.setText("Hàng đợi trống" if not pending else f"{pending} việc đang chờ…")
+            return
+        self.progress.show()
+        self.progress.setValue(int(current.progress * 10))
+        message = f"{current.video_name}: {current.message[:60]}" if current.message else current.video_name
+        self.label.setText(f"▶ {message}" + (f"   ·   còn {pending} việc chờ" if pending else ""))
+        self.label.setToolTip(f"{current.steps_label}\nĐã chạy {current.elapsed():.0f}s")
+
+
+class ModelBar(QtWidgets.QFrame):
+    """Dải "đang dùng model nào" ngay trên màn hình chính — bấm Đổi là sang trang Providers."""
+
+    def __init__(self, state: AppState, parent=None):
+        super().__init__(parent)
+        self.state = state
+        self.setObjectName("Panel")
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+        self.label = QtWidgets.QLabel("Model dịch: chưa có provider")
+        layout.addWidget(self.label, 1)
+        self.key_label = QtWidgets.QLabel("")
+        self.key_label.setStyleSheet(f"color: {WARNING};")
+        layout.addWidget(self.key_label)
+        layout.addWidget(push_button("Đổi model", self._go, "translate"))
+        state.projectOpened.connect(self.refresh)
+        state.projectChanged.connect(self.refresh)
+        state.settingsChanged.connect(self.refresh)
+        self.refresh()
+
+    def _go(self) -> None:
+        self.state.navigateRequested.emit("providers")
+
+    def refresh(self) -> None:
+        resolved = resolve(self.state.settings, "translate", self.state.project, None)
+        self.label.setText(f"Model dịch: {resolved.describe('translate')}")
+        profile = resolved.profile
+        # các kind LLM đều cần key; thiếu thì gõ đỏ ngay ở màn hình chính
+        missing_key = profile is not None and profile.kind in LLM_KINDS and not profile.api_keys
+        self.key_label.setText("⚠ chưa có key — lấy tại opencode.ai/auth" if missing_key else "")
+
 
 class ProjectsPage(QtWidgets.QWidget):
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
         self.state = state
-        layout = QtWidgets.QHBoxLayout(self)
+        layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        self.model_bar = ModelBar(state)
+        layout.addWidget(self.model_bar)
+        self.queue_bar = QueueBar(state)
+        layout.addWidget(self.queue_bar)
         splitter = QtWidgets.QSplitter()
         self.list = ProjectList(state)
         splitter.addWidget(self.list)

@@ -12,3 +12,7 @@ bin/
 # sinh ra khi build
 release/
 reviewtrans/_build_info.py
+
+# môi trường ảo thứ hai + metadata workspace
+venv/
+.freebuff/

@@ -1,6 +1,6 @@
-<p align="center"><img src="assets/logo.svg" width="128" alt="ReviewTrans Studio"></p>
+<p align="center"><img src="assets/logo.svg" width="128" alt="ThanhDub"></p>
 
-# ReviewTrans Studio
+# ThanhDub
 
 Công cụ dịch, lồng tiếng và chèn phụ đề tự động cho video review phim, với giao diện kiểu phần mềm dựng video.
 
@@ -12,9 +12,23 @@ Công cụ dịch, lồng tiếng và chèn phụ đề tự động cho video r
 - **Editor**: bảng câu thoại (sửa trực tiếp, tách/gộp/khoá câu), khung phát libmpv (tự chuyển sang Qt Multimedia
   nếu chưa có libmpv), inspector, timeline nhiều track (layer, phụ đề, lồng tiếng, âm gốc, nhạc nền, video).
 - **Dịch**: Google Translate, Microsoft Translator (không cần key hoặc dùng key Azure/Google Cloud),
-  API kiểu OpenAI (OpenAI, DeepSeek, OpenRouter, LM Studio…), API kiểu Gemini, Anthropic Claude. Hỗ trợ nhiều key xoay vòng.
-- **Lồng tiếng**: Edge TTS, vBee, API kiểu OpenAI `/v1/audio/speech`, Custom API bản cũ. Có thể đặt giọng riêng
+  **NVIDIA NIM / Riva NMT** (dịch máy chuyên dụng 36 ngôn ngữ, chỉ cần key nvapi),
+  **Deep Translator** (thư viện `deep-translator`: google, mymemory, libre, deepl, microsoft, yandex, papago, baidu),
+  API kiểu OpenAI (OpenAI, DeepSeek, OpenRouter, LM Studio, **NVIDIA NIM** `integrate.api.nvidia.com/v1`…),
+  API kiểu Gemini, Anthropic Claude. Hỗ trợ nhiều key xoay vòng.
+  Bị lỗi 429 thì tự chờ và thử lại; Google đi được qua proxy/mirror bằng ô **Base URL**.
+- **Model free qua OpenCode Zen**: loại provider **“OpenCode Zen (model free)”** ở trang Providers (hoặc nút
+  nhanh **Model free (Zen)**) thêm `big-pickle`, `mimo-v2.6-flash-free`, `space-bunny-free`…
+  (Base URL `https://opencode.ai/zen/v1`, giá $0/1M token — chỉ cần key lấy tại opencode.ai/auth).
+  Màn hình chính có dải **“Model dịch: …”** cho biết đang dùng model nào, thiếu key thì gõ đỏ,
+  bấm **Đổi model** là qua Providers.
+- **Nhận dạng**: whisper.cpp (mọi máy, chạy được CPU/GPU) hoặc **Moonshine** (nhỏ, nhanh, 7 ngôn ngữ).
+  Không muốn chờ dịch thì **xuất SRT → dịch ở ngoài → nhập lại** vào Editor.
+- **Lồng tiếng**: **Blaze TTS** (api.blaze.vn — dán nhiều token, mỗi dòng một token, app tự xoay vòng),
+  Edge TTS, vBee, API kiểu OpenAI `/v1/audio/speech`, Custom API bản cũ. Có thể đặt giọng riêng
   cho từng nhân vật hoặc từng câu. Sửa câu nào chỉ tạo lại lồng tiếng câu đó.
+  Bấm **Chọn giọng…** để mở kho giọng Blaze (212 giọng, cache 12 giờ) và **nghe thử trước khi dùng** —
+  mẫu nghe thử được cache nên bấm lại không tốn quota.
 - **Bật/tắt** phụ đề, lồng tiếng, âm gốc, nhạc nền, từng layer.
 - **Style phụ đề**: font, cỡ, màu chữ, viền, bóng, hộp nền, vị trí, lề, số ký tự mỗi dòng. Lưu thành preset.
 - **Layer**: ảnh (logo), chữ, vùng che (làm mờ / pixel hoá / tô màu) để che chữ cứng của video gốc.
@@ -25,7 +39,7 @@ Công cụ dịch, lồng tiếng và chèn phụ đề tự động cho video r
 - Trang riêng cho **Providers**, **Preset**, **Tài nguyên** (tải ffmpeg, whisper.cpp, model Whisper, libmpv),
   **Công cụ** (ghép video), **Cài đặt**.
 
-⬇️ **[Tải bản mới nhất (installer / portable)](https://github.com/dominhhieu1405/ReviewTrans/releases/latest)**
+⬇️ **[Tải bản mới nhất (installer / portable)](https://github.com/mr-f241/ThanhDub/releases/latest)**
 
 📖 **[Hướng dẫn sử dụng đầy đủ (có ảnh minh hoạ)](docs/huong-dan-su-dung.md)**
 
@@ -37,8 +51,28 @@ python -m venv .venv
 .venv\Scripts\python main.py
 ```
 
+Trên Linux/macOS dùng `.venv/bin/pip` và `.venv/bin/python main.py`.
+
 Lần đầu mở, vào trang **Tài nguyên** để tải FFmpeg, whisper.cpp và libmpv (player). Cấu hình cũ
 (`~/.video_translation_studio/config.json`) được tự chuyển thành các provider.
+
+## Bản cho Linux
+
+Tải `ThanhDub-<phiên bản>-linux-x86_64.tar.xz` ở mục Releases, giải nén rồi:
+
+```bash
+./run.sh        # chạy luôn
+./install.sh    # hoặc cài vào ~/.local → menu ứng dụng + lệnh `thanhdub`
+```
+
+Thư viện hệ thống cần có: `libgl1 libegl1 libxkbcommon0 fontconfig` (Ubuntu/Debian). Thêm
+`sudo apt install libmpv2` để có player libmpv; thiếu thì app tự dùng Qt Multimedia. Muốn tự build:
+
+```bash
+.venv/bin/python scripts/build_linux.py all
+```
+
+Chi tiết trong [PACKAGING.md](PACKAGING.md).
 
 ## Cấu trúc
 

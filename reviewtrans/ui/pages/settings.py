@@ -4,11 +4,20 @@ from PyQt6 import QtCore, QtWidgets
 
 from ...core import hardware
 from ...core.config import whisper_thread_count
+from ... import APP_VERSION
 from ...core.langs import SOURCE_LANGUAGES, TARGET_LANGUAGES, display_name
-from ...core.pipeline.resources import KNOWN_WHISPER_MODELS, downloaded_whisper_models
+from ...core.pipeline.resources import (
+    KNOWN_MOONSHINE_MODELS,
+    KNOWN_WHISPER_MODELS,
+    downloaded_moonshine_models,
+    downloaded_whisper_models,
+    moonshine_label,
+    suggest_moonshine_model,
+)
 from ..jobs import run_background
 from ..state import AppState
 from ..theme import SUCCESS, TEXT_DIM
+from ..updates import check_for_updates
 from ..widgets.common import ComboBox, PathEdit, SpinBox, form_layout, hint, push_button, scroll_wrap, title_label
 
 CODECS = hardware.CODECS
@@ -31,23 +40,32 @@ class SettingsPage(QtWidgets.QWidget):
         self.source_lang = ComboBox([(c, display_name(c)) for c in SOURCE_LANGUAGES])
         self.target_lang = ComboBox([(c, display_name(c)) for c in TARGET_LANGUAGES])
         self.player = ComboBox([("auto", "Tự động (libmpv nếu có)"), ("mpv", "libmpv"), ("qt", "Qt Multimedia")])
+        self.theme = ComboBox([("dark", "Tối (mặc định)"), ("light", "Sáng")])
         form.addRow("Thư mục chứa project", self.projects_root)
         form.addRow("Ngôn ngữ gốc mặc định", self.source_lang)
         form.addRow("Ngôn ngữ đích mặc định", self.target_lang)
         form.addRow("Player", self.player)
+        form.addRow("Giao diện", self.theme)
         layout.addWidget(general)
 
         processing = QtWidgets.QGroupBox("Xử lý")
         form = form_layout()
         processing.setLayout(form)
+        self.asr_engine = ComboBox(hardware.ASR_ENGINES)
         self.whisper = ComboBox()
         self.whisper.setEditable(True)
+        self.moonshine = ComboBox()
+        self.moonshine.setEditable(True)
+        self.moonshine_button = push_button("Chọn theo ngôn ngữ nguồn", self.pick_moonshine, "refresh")
         self.threads = SpinBox(0, 64, 0)
         self.threads.setSpecialValueText(f"Tự động ({whisper_thread_count(0)})")
         self.asr_device = ComboBox(hardware.ASR_DEVICES)
         self.batch = SpinBox(5, 300, 60, " câu")
         self.tts_concurrency = SpinBox(1, 16, 3, " luồng")
+        form.addRow("Bộ nhận dạng", self.asr_engine)
         form.addRow("Model Whisper mặc định", self.whisper)
+        form.addRow("Model Moonshine mặc định", self.moonshine)
+        form.addRow("", self.moonshine_button)
         form.addRow("Whisper chạy trên", self.asr_device)
         form.addRow("Số luồng CPU Whisper", self.threads)
         form.addRow("Số câu mỗi lần dịch", self.batch)
@@ -66,6 +84,13 @@ class SettingsPage(QtWidgets.QWidget):
         form.addRow("Chất lượng (CRF/CQ)", self.crf)
         form.addRow("Preset x264/x265 (CPU)", self.preset)
         form.addRow("Bitrate âm thanh", self.audio_bitrate)
+        self.export_preset = ComboBox([
+            ("none", "Giữ nguyên khung gốc"),
+            ("1080p", "Thu nhỏ còn 1080p"),
+            ("720p", "Thu nhỏ còn 720p"),
+            ("tiktok", "TikTok / Shorts 9:16 (1080×1920, cắt giữa)"),
+        ])
+        form.addRow("Khung xuất", self.export_preset)
         form.addRow("", self.hwaccel)
         layout.addWidget(render)
 
@@ -86,23 +111,60 @@ class SettingsPage(QtWidgets.QWidget):
             "Whisper dùng GPU cần tải bản CUDA (NVIDIA) hoặc Vulkan (AMD/Intel/NVIDIA) ở trang Tài nguyên."
         ))
         layout.addWidget(accel)
-        layout.addWidget(hint("CRF càng nhỏ chất lượng càng cao (18–23 là hợp lý). Đổi player cần khởi động lại ứng dụng."))
+
+        updates_box = QtWidgets.QGroupBox("Bản mới")
+        form = form_layout()
+        updates_box.setLayout(form)
+        self.check_updates = QtWidgets.QCheckBox("Tự kiểm tra bản mới khi mở ứng dụng")
+        self.check_button = push_button("Kiểm tra ngay", self.check_updates_now, "refresh")
+        form.addRow("", self.check_updates)
+        form.addRow("", self.check_button)
+        layout.addWidget(updates_box)
+
+        layout.addWidget(hint(
+            "CRF càng nhỏ chất lượng càng cao (18–23 là hợp lý). Đổi player hoặc giao diện cần khởi động lại ứng dụng."
+        ))
         layout.addStretch()
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.addWidget(scroll_wrap(inner))
 
         self.save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self.commit)
-        for widget in (self.source_lang, self.target_lang, self.player, self.codec, self.preset, self.audio_bitrate, self.asr_device):
+        for widget in (self.source_lang, self.target_lang, self.player, self.codec, self.preset, self.audio_bitrate, self.asr_device, self.asr_engine, self.theme, self.export_preset):
             widget.currentIndexChanged.connect(self.save_timer.start)
         for widget in (self.threads, self.batch, self.tts_concurrency, self.crf):
             widget.valueChanged.connect(self.save_timer.start)
         self.whisper.currentTextChanged.connect(self.save_timer.start)
+        self.moonshine.currentTextChanged.connect(self.save_timer.start)
         self.hwaccel.toggled.connect(self.save_timer.start)
+        self.check_updates.toggled.connect(self.save_timer.start)
         self.projects_root.changed.connect(self.save_timer.start)
         self.load()
         self._detecting = False
         self.show_hardware(hardware.load_cached())
+
+    def check_updates_now(self) -> None:
+        self.check_button.setEnabled(False)
+
+        def reenable() -> None:
+            self.check_button.setEnabled(True)
+
+        QtCore.QTimer.singleShot(8000, reenable)
+        check_for_updates(self, APP_VERSION, silent=False)
+
+    def pick_moonshine(self) -> None:
+        """Đặt model Moonshine theo ngôn ngữ nguồn đang chọn."""
+        model = suggest_moonshine_model(self.source_lang.value())
+        self.moonshine.setEditText(model)
+        self.status = f"Model Moonshine: {moonshine_label(model)}"
+
+    def sync_engine(self) -> None:
+        """Chỉ bật ô nhập của bộ nhận dạng đang chọn."""
+        moonshine = self.asr_engine.value() == "moonshine"
+        self.whisper.setEnabled(not moonshine)
+        self.asr_device.setEnabled(not moonshine)
+        self.moonshine.setEnabled(moonshine)
+        self.moonshine_button.setEnabled(moonshine)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -158,9 +220,16 @@ class SettingsPage(QtWidgets.QWidget):
         self.source_lang.set_value(s.default_source_language)
         self.target_lang.set_value(s.default_target_language)
         self.player.set_value(s.player_backend)
+        self.theme.set_value(s.theme if s.theme in ("dark", "light") else "dark")
+        self.check_updates.setChecked(s.check_updates)
         models = sorted(set(downloaded_whisper_models() + KNOWN_WHISPER_MODELS))
         self.whisper.set_items([(m, m) for m in models], keep=False)
         self.whisper.setEditText(s.default_whisper_model)
+        moon = sorted(set(downloaded_moonshine_models() + KNOWN_MOONSHINE_MODELS),
+                      key=lambda m: (not m.endswith(("zh", "vi")), m))
+        self.moonshine.set_items([(m, moonshine_label(m)) for m in moon], keep=False)
+        self.moonshine.setEditText(s.default_moonshine_model or moon[0])
+        self.asr_engine.set_value(s.asr_engine)
         self.threads.setValue(s.whisper_threads)
         self.asr_device.set_value(s.asr_device)
         self.batch.setValue(s.translate_batch_size)
@@ -169,8 +238,10 @@ class SettingsPage(QtWidgets.QWidget):
         self.crf.setValue(s.render.crf)
         self.preset.set_value(s.render.preset)
         self.audio_bitrate.set_value(s.render.audio_bitrate)
+        self.export_preset.set_value(s.render.export_preset if s.render.export_preset in ("none", "1080p", "720p", "tiktok") else "none")
         self.hwaccel.setChecked(s.render.hwaccel_decode)
         self._loading = False
+        self.sync_engine()
 
     def commit(self) -> None:
         if self._loading:
@@ -180,7 +251,11 @@ class SettingsPage(QtWidgets.QWidget):
         s.default_source_language = self.source_lang.value()
         s.default_target_language = self.target_lang.value()
         s.player_backend = self.player.value()
+        s.theme = self.theme.value() if self.theme.value() in ("dark", "light") else "dark"
+        s.check_updates = self.check_updates.isChecked()
         s.default_whisper_model = self.whisper.currentText().strip() or "small"
+        s.asr_engine = self.asr_engine.value()
+        s.default_moonshine_model = self.moonshine.currentText().strip() or s.default_moonshine_model
         s.whisper_threads = self.threads.value()
         s.asr_device = self.asr_device.value()
         s.translate_batch_size = self.batch.value()
@@ -189,6 +264,8 @@ class SettingsPage(QtWidgets.QWidget):
         s.render.crf = self.crf.value()
         s.render.preset = self.preset.value()
         s.render.audio_bitrate = self.audio_bitrate.value()
+        s.render.export_preset = self.export_preset.value()
         s.render.hwaccel_decode = self.hwaccel.isChecked()
         self.state.save_settings()
+        self.sync_engine()
         self.show_hardware(hardware.load_cached())
