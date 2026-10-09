@@ -14,6 +14,7 @@ from .llm import (
     ZenTranslator,
 )
 from .machine import GoogleTranslator, MicrosoftTranslator
+from .opencode_local import OpenCodeLocalTranslator
 from .riva import RivaTranslator
 
 _KINDS: dict[str, type[Translator]] = {
@@ -23,6 +24,7 @@ _KINDS: dict[str, type[Translator]] = {
     "deep": DeepTranslator,
     "openai": OpenAICompatTranslator,
     "zen": ZenTranslator,
+    "opencode": OpenCodeLocalTranslator,
     "gemini": GeminiCompatTranslator,
     "anthropic": AnthropicTranslator,
 }
@@ -30,6 +32,7 @@ _KINDS: dict[str, type[Translator]] = {
 SUGGESTED_MODELS = {
     "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "deepseek-chat"],
     "zen": list(ZEN_FREE_MODELS),
+    "opencode": ["big-pickle", "mimo-v2.6-flash-free", "space-bunny-free", "longcat-2.5-preview-free"],
     "gemini": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-flash-latest"],
     "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
 }
@@ -45,6 +48,7 @@ def create_translator(profile: ProviderProfile, model_override: str = "") -> Tra
 __all__ = [
     "DEEP_ENGINES",
     "LLMTranslator",
+    "OpenCodeLocalTranslator",
     "SUGGESTED_MODELS",
     "ZEN_BASE_URL",
     "ZEN_FREE_MODELS",

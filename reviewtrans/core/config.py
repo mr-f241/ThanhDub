@@ -17,10 +17,11 @@ TRANSLATE_KINDS = {
     "deep": "Deep Translator (nhiều engine)",
     "openai": "API kiểu OpenAI",
     "zen": "OpenCode Zen (model free)",
+    "opencode": "OpenCode (máy cục bộ)",
     "gemini": "API kiểu Gemini",
     "anthropic": "Anthropic (Claude)",
 }
-LLM_KINDS = {"openai", "zen", "gemini", "anthropic"}
+LLM_KINDS = {"openai", "zen", "opencode", "gemini", "anthropic"}
 
 TTS_KINDS = {
     "blaze": "Blaze TTS (api.blaze.vn)",

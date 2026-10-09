@@ -44,6 +44,10 @@ KIND_HINTS = {
             "OpenCode Zen — gateway model free của OpenCode: Big Pickle, MiMo V2.6 Flash, Space Bunny… "
             "Giá $0/1M token nhưng vẫn cần key lấy tại opencode.ai/auth. Giai đoạn free thì prompt "
             "có thể được dùng để cải thiện model."),
+    "opencode": ("(trống = tự lấy từ service.json của OpenCode đang mở)", "big-pickle",
+                 "OpenCode (máy cục bộ) — dịch qua chính app OpenCode đang mở trên máy, **không cần key**, "
+                 "model free ($0). App OpenCode phải đang mở trước khi dịch; hệ thống tự đọc service.json "
+                 "để lấy địa chỉ server. Chưa mở app → báo lỗi rõ ràng thay vì im lặng."),
     "gemini": ("(để trống = Google AI Studio)", "gemini-2.5-flash", "API kiểu Gemini (google-genai). Có thể điền base URL của proxy tương thích."),
     "anthropic": ("(để trống = api.anthropic.com)", "claude-opus-5", "Claude qua SDK chính thức. Base URL để trống sẽ bật fallback phía server khi model từ chối."),
     "blaze": ("https://api.blaze.vn", "v2.0_pro",
@@ -212,6 +216,7 @@ class ProfileEditor(QtWidgets.QWidget):
                 "deep": "google/mymemory để trống; libre/deepl/microsoft/yandex: mỗi dòng một key; "
                          "papago: client_id:secret; baidu: appid:appkey",
                 "openai_zen": "Key Zen: lấy tại opencode.ai/auth — model free giá $0/1M token",
+                "opencode": "Không cần key — tự lấy mật khẩu local từ service.json của OpenCode đang mở",
             }.get(
                 "openai_zen"
                 if profile.kind == "zen" or (profile.kind == "openai" and self._is_zen(profile.base_url))
@@ -222,7 +227,7 @@ class ProfileEditor(QtWidgets.QWidget):
         self.model.lineEdit().setPlaceholderText(model_hint)
         self.region.setEnabled(profile.kind == "microsoft")
         self.model.setEnabled(profile.kind not in ("google", "microsoft", "riva", "deep", "edge", "vbee", "legacy_custom"))
-        self.fetch_models.setVisible(profile.kind in ("openai", "zen", "gemini", "anthropic", "openai_speech"))
+        self.fetch_models.setVisible(profile.kind in ("openai", "zen", "opencode", "gemini", "anthropic", "openai_speech"))
         self.hint.setText(text)
 
     def _fetch_models(self) -> None:

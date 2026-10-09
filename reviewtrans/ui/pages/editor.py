@@ -544,6 +544,10 @@ class EditorPage(QtWidgets.QWidget):
             self.inspector.addTab(scroll_wrap(widget), label)
         self.provider_tab = self.inspector.widget(self.inspector.count() - 1)
         self.inspector.setMinimumWidth(350)
+        # tab nhiều + panel hẹp: nén tab vừa khung thay vì tràn ra cắt mất tab đầu
+        self.inspector.tabBar().setExpanding(True)
+        self.inspector.tabBar().setElideMode(QtCore.Qt.TextElideMode.ElideRight)
+        self.inspector.setUsesScrollButtons(True)
         upper.addWidget(self.inspector)
         upper.setStretchFactor(0, 3)
         upper.setStretchFactor(1, 5)

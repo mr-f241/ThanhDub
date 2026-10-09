@@ -731,8 +731,13 @@ class ModelBar(QtWidgets.QFrame):
         resolved = resolve(self.state.settings, "translate", self.state.project, None)
         self.label.setText(f"Model dịch: {resolved.describe('translate')}")
         profile = resolved.profile
-        # các kind LLM đều cần key; thiếu thì gõ đỏ ngay ở màn hình chính
-        missing_key = profile is not None and profile.kind in LLM_KINDS and not profile.api_keys
+        # các kind LLM đều cần key (trừ OpenCode local — tự lấy mật khẩu từ service.json); thiếu thì gõ đỏ ngay ở màn hình chính
+        missing_key = (
+            profile is not None
+            and profile.kind in LLM_KINDS
+            and profile.kind != "opencode"
+            and not profile.api_keys
+        )
         self.key_label.setText("⚠ chưa có key — lấy tại opencode.ai/auth" if missing_key else "")
 
 

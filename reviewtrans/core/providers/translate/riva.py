@@ -19,6 +19,23 @@ _RIVA_VARIANTS = {"es": ["es-ES", "es-US"], "pt": ["pt-BR", "pt-PT"]}
 _CALL_GAP = 0.2  # giãn cách giữa hai lần gọi NVCF
 
 
+def _grpc_uri(raw: str) -> tuple[str, bool]:
+    """Chuẩn hoá base_url về dạng gRPC cần: ``host:port`` + cờ ssl.
+
+    Người dùng hay dán ``https://integrate.api.nvidia.com/v1`` — gRPC parse nguyên chuỗi
+    đó sẽ lỗi “Failed to parse port in name” ngay cả khi mạng vẫn tốt.
+    """
+    value = (raw or "").strip().rstrip("/")
+    use_ssl = True
+    if "://" in value:
+        scheme, value = value.split("://", 1)
+        use_ssl = scheme.lower() != "http"
+    value = value.split("/", 1)[0]  # bỏ path (/v1, /nvcf/...)
+    if value and ":" not in value.rsplit("@", 1)[-1]:
+        value += ":443" if use_ssl else ":80"
+    return value or NVCF_BASE, use_ssl
+
+
 class RivaTranslator(MachineTranslator):
     """API key = NVIDIA_API_KEY (nvapi-…). Không key thì đọc biến môi trường cùng tên."""
 
@@ -38,11 +55,11 @@ class RivaTranslator(MachineTranslator):
 
         key = self.keys.next()
         function_id = str(self.profile.option("function_id", os.environ.get(ENV_FUNCTION_ID, DEFAULT_FUNCTION_ID)))
-        base = (self.profile.base_url or NVCF_BASE).rstrip("/")
+        base, use_ssl = _grpc_uri(self.profile.base_url or NVCF_BASE)
         metadata = [("function-id", function_id)]
         if key:
             metadata.append(("authorization", f"Bearer {key}"))
-        return riva.client.Auth(uri=base, use_ssl=not base.startswith("http://"), metadata_args=metadata)
+        return riva.client.Auth(uri=base, use_ssl=use_ssl, metadata_args=metadata)
 
     def _nmt(self):
         if self._client is None:

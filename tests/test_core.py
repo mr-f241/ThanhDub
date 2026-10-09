@@ -672,3 +672,16 @@ def test_cover_fit_scan(qapp):
     empty = QtGui.QImage(640, 360, QtGui.QImage.Format.Format_RGB32)
     empty.fill(QtGui.QColor(20, 30, 60))
     assert _scan(empty, (0.0, 0.5, 1.0, 0.5), min_width=0.05) is None
+
+
+def test_riva_grpc_uri_normalization():
+    from reviewtrans.core.providers.translate.riva import _grpc_uri
+
+    # user hay dán kèm scheme + path → gRPC chỉ muốn host:port
+    assert _grpc_uri("https://integrate.api.nvidia.com/v1") == ("integrate.api.nvidia.com:443", True)
+    # dạng host:port sẵn có thì giữ nguyên
+    assert _grpc_uri("grpc.nvcf.nvidia.com:443") == ("grpc.nvcf.nvidia.com:443", True)
+    # http → ssl tắt, port 80
+    assert _grpc_uri("http://myhost/v2") == ("myhost:80", False)
+    # port tự chỉ định giữ nguyên dù có path
+    assert _grpc_uri("host.example:8443/api") == ("host.example:8443", True)
