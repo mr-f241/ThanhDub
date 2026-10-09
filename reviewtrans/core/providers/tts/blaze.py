@@ -22,7 +22,7 @@ import requests
 from ...loudness import normalize
 from ...paths import user_data_dir
 from ...proc import StopRequested
-from .. import ProviderError
+from .. import FatalProviderError, ProviderError
 
 PUBLIC_API = "https://api.blaze.vn"
 GATEWAY = "https://gateway.blaze.vn"
@@ -165,6 +165,40 @@ class TokenState:
         }
 
 
+# lỗi thuộc về TÀI KHOẢN Blaze (không phải một token hỏng) — xoay token khác không cứu được
+_ACCOUNT_ERRORS = ("banned", "suspended", "disabled", "vi phạm", "khóa tài khoản", "khong duoc phep")
+
+
+def error_detail(response: Any) -> str:
+    """Đọc message server trả kèm 401/403.
+
+    Blaze trả ``{"detail": {"message": "Your account has been banned", ...}}`` — trước đây
+    phần này bị vứt đi nên người dùng chỉ thấy "token bị từ chối (401)" rồi đinh ninh token hỏng.
+    """
+    try:
+        data = response.json()
+    except ValueError:
+        return str(getattr(response, "text", "") or "").strip()[:160]
+    if not isinstance(data, dict):
+        return "" if data is None else str(data)[:160]
+    detail: Any = data.get("detail")
+    if isinstance(detail, dict):
+        detail = detail.get("message") or detail.get("msg")
+    elif isinstance(detail, list) and detail:
+        first = detail[0]
+        detail = first.get("msg") if isinstance(first, dict) else first
+    if not detail:
+        detail = data.get("message") or data.get("error") or data.get("msg")
+    if isinstance(detail, dict):
+        detail = detail.get("message")
+    return str(detail)[:160] if detail else ""
+
+
+def _is_account_error(detail: str) -> bool:
+    text = (detail or "").lower()
+    return any(word in text for word in _ACCOUNT_ERRORS)
+
+
 class BlazeKeyPool:
     """Xoay vòng token theo quota cửa sổ trượt, lưu bộ đếm xuống đĩa."""
 
@@ -300,7 +334,7 @@ class BlazeKeyPool:
                 state.last_error = "hết quota"
             elif status in (401, 403):
                 state.dead = True
-                state.last_error = f"token bị từ chối ({status})"
+                state.last_error = f"token bị từ chối ({status})" + (f": {error[:140]}" if error else "")
             elif status is not None:
                 state.fail_count += 1
                 state.last_error = error[:120]
@@ -312,7 +346,10 @@ class BlazeKeyPool:
             return "chưa có token Blaze nào — dán token vào ô API key (mỗi dòng một token)"
         states = [s.window_state(now) for s in self._tokens.values()]
         if all(s == "dead" for s in states):
-            return "mọi token đều bị từ chối (401) — kiểm tra lại token"
+            # nêu đúng lý do server trả về (vd. "Your account has been banned") thay vì hardcode 401
+            details = sorted({s.last_error.strip() for s in self._tokens.values() if s.last_error and s.last_error.strip()})
+            why = "; ".join(details[:2]) + (" …" if len(details) > 2 else "") if details else "401"
+            return f"mọi token đều bị từ chối — {why}. Lấy token mới hoặc kiểm tra tài khoản Blaze."
         if all(s in ("dead", "off") for s in states):
             return "mọi token đều bị tắt hoặc đã chết"
         cooling = [s for s in self._tokens.values() if s.window_state(now) == "cooling"]
@@ -396,8 +433,15 @@ class BlazeTTS:
             self.pool.report(state, ok=False, error=str(exc))
             raise ProviderError(f"Lỗi mạng: {exc}") from exc
         if response.status_code in (401, 403):
-            self.pool.report(state, ok=False, status=response.status_code, error="token bị từ chối")
-            raise _RetryToken(f"token bị từ chối ({response.status_code})")
+            status = response.status_code
+            detail = error_detail(response)
+            self.pool.report(state, ok=False, status=status, error=detail)
+            if status == 403 and _is_account_error(detail):
+                # 403 do TÀI KHOẢN (vd. "Your account has been banned"): mọi token đều thuộc
+                # cùng một tài khoản → xoay vòng vô ích, đốt hết pool rồi người dùng chỉ thấy
+                # "401" mơ hồ. Báo ngay đúng nguyên nhân.
+                raise FatalProviderError(f"Blaze từ chối tài khoản (403): {detail}")
+            raise _RetryToken(f"token bị từ chối ({status})" + (f": {detail}" if detail else ""))
         if response.status_code == 429:
             self.pool.report(state, ok=False, status=429, error="hết quota")
             raise _RetryToken("đã vượt quota")

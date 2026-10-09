@@ -98,6 +98,14 @@ class EdgeTTS(TTSProvider):
 
         try:
             asyncio.run(_run())
+        except ValueError as exc:
+            # Giọng Blaze (HN-Nu-ReviewPhim) lọt vào provider Edge → edge_tts ném
+            # "Invalid voice '…'". Báo đúng cách sửa thay vì ném ValueError trần.
+            raise ProviderError(
+                f"Thông số giọng Edge không hợp lệ ({exc}) — giọng đang dùng {chosen!r}. "
+                "Giọng Edge phải dạng vi-VN-HoaiMyNeural; giọng Blaze (vd. HN-Nu-ReviewPhim) "
+                "chỉ dùng được khi provider là Blaze."
+            ) from exc
         except Exception as exc:  # noqa: BLE001 - edge_tts ném NoAudioReceived/SocketError đủ kiểu
             if "no audio" in str(exc).lower():
                 raise NoAudioError(

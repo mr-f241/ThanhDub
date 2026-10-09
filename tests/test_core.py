@@ -527,7 +527,7 @@ class _Resp:
 class _FakeBlaze:
     """Chặn mọi request của BlazeTTS, trả lời theo kịch bản cho trước."""
 
-    def __init__(self, *, speakers=None, token_broken=()):
+    def __init__(self, *, speakers=None, token_broken=(), banned=False):
         self.calls = []          # (method, path, token, payload)
         self.speakers = speakers if speakers is not None else [
             {"id": "HN-Nu-1-TM", "name": "BTV Hương Giang", "language": "vi",
@@ -535,6 +535,7 @@ class _FakeBlaze:
             {"id": "US-Nam-1-BL", "name": "Male Announcer", "language": "en", "gender": "Male"},
         ]
         self.token_broken = set(token_broken)
+        self.banned = banned      # tài khoản Blaze bị khoá → 403 trên mọi lần tạo job
 
     def request(self, method, url, json=None, headers=None, params=None, stream=False, timeout=None):
         token = str((headers or {}).get("Authorization", "")).removeprefix("Bearer ")
@@ -542,6 +543,8 @@ class _FakeBlaze:
         if token in self.token_broken:
             return _Resp(401, {"msg": "bad token"})
         path = url.split("?")[0]
+        if self.banned and path.endswith("/v1/tts"):
+            return _Resp(403, {"detail": {"message": "Your account has been banned", "type": "user-is-banned"}})
         if path.endswith("/tts/options"):
             return _Resp(200, {"speakers": self.speakers})
         if path.endswith("/download"):
@@ -608,6 +611,54 @@ def test_blaze_pool_cools_down_on_429_and_persists(tmp_path, home, monkeypatch):
     provider.pool.clear_history()
     assert provider.pool.summary()["ready"] == 2
     assert provider.pool.reset_dead() == 0
+
+
+def test_blaze_tai_khoan_bi_khoa_bao_dung_nguyen_nhan(tmp_path, home, monkeypatch):
+    """403 'Your account has been banned' → báo đúng nguyên nhân thay vì 'token bị từ chối (401)'.
+
+    Sự thật trên máy thật: GET /tts/options vẫn 200 nhưng POST /v1/tts trả
+    ``{"detail":{"message":"Your account has been banned"}}`` → 11 token chết dần,
+    người dùng bấm kiểm tra 20 lần và chỉ thấy lỗi 401 mơ hồ.
+    """
+    from reviewtrans.core.providers import FatalProviderError
+    from reviewtrans.core.providers.tts.blaze import error_detail
+
+    assert error_detail(_Resp(403, {"detail": {"message": "Your account has been banned"}})) == \
+        "Your account has been banned"
+    assert error_detail(_Resp(401, {"msg": "bad token"})) == "bad token"
+    assert error_detail(_Resp(403, {"detail": [{"msg": "một lỗi"}]})) == "một lỗi"
+
+    provider, _ = _blaze(tmp_path, monkeypatch)
+    fake = _FakeBlaze(banned=True)
+    monkeypatch.setattr("reviewtrans.core.providers.tts.blaze.requests.request", fake.request)
+    monkeypatch.setattr("reviewtrans.core.providers.tts.blaze.normalize", lambda p: p)
+    monkeypatch.setattr("reviewtrans.core.providers.tts.blaze.time.sleep", lambda _s: None)
+
+    with pytest.raises(FatalProviderError) as exc:
+        provider.synthesize("xin chào", "HN-Nu-1-TM", 1.0, tmp_path / "seg")
+    assert "banned" in str(exc.value)          # nêu đúng lý do server trả
+    assert provider.pool.summary()["dead"] == 1  # dừng ngay, không đốt hết pool token
+
+    # hỏi lại lý do khi mọi token đã chết → vẫn phải nêu đúng nguyên nhân
+    for state in provider.pool._tokens.values():
+        provider.pool.report(state, ok=False, status=403, error="Your account has been banned")
+    reason = provider.pool._no_token_reason()
+    assert "banned" in reason and "(401)" not in reason
+    assert provider.pool.summary()["dead"] == 2
+
+
+def test_edge_voice_sai_bao_cach_sua(tmp_path):
+    """Giọng Blaze (HN-Nu-…) lọt vào provider Edge → báo rõ cách sửa, không ném ValueError trần."""
+    from reviewtrans.core.providers import ProviderError
+    from reviewtrans.core.providers.tts import EdgeTTS
+
+    provider = EdgeTTS(ProviderProfile(
+        kind="edge", name="Edge", api_keys=[], options={"voice": "HN-Nu-ReviewPhim"},
+    ))
+    with pytest.raises(ProviderError) as exc:
+        provider.synthesize("Xin chào, đây là giọng đọc thử.", "HN-Nu-ReviewPhim", 1.0, tmp_path / "t")
+    message = str(exc.value)
+    assert "HN-Nu-ReviewPhim" in message and "vi-VN-HoaiMyNeural" in message and "Blaze" in message
 
 
 def test_blaze_voices_cached_once_and_filtered_by_language(tmp_path, home, monkeypatch):
