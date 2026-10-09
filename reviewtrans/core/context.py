@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 
-from .langs import english_name
+from .langs import english_name, scrub_term
 from .models import Character, ContextLog, GlossaryEntry, ProjectContext, Segment
 
 MAX_SUMMARY_CHARS = 4000
@@ -22,7 +22,7 @@ def context_block(context: ProjectContext, instructions: str = "") -> str:
             if not c.source and not c.target:
                 continue
             detail = [x for x in (c.gender, c.role) if x]
-            line = f"- {c.source} => {c.target or c.source}"
+            line = f"- {c.source} => {scrub_term(c.target) or c.source}"
             if detail:
                 line += f" ({', '.join(detail)})"
             if c.addressing:
@@ -34,7 +34,7 @@ def context_block(context: ProjectContext, instructions: str = "") -> str:
             parts.append("CHARACTERS (use these names and forms of address consistently):\n" + "\n".join(lines))
     if context.glossary:
         lines = [
-            f"- {g.source} => {g.target}" + (f" ({g.note})" if g.note else "")
+            f"- {g.source} => {scrub_term(g.target)}" + (f" ({g.note})" if g.note else "")
             for g in context.glossary
             if g.source and g.target
         ]
@@ -46,8 +46,9 @@ def context_block(context: ProjectContext, instructions: str = "") -> str:
 
 
 def glossary_pairs(context: ProjectContext) -> list[tuple[str, str]]:
-    pairs = [(g.source, g.target) for g in context.glossary if g.source and g.target]
-    pairs += [(c.source, c.target) for c in context.characters if c.source and c.target]
+    # scrub_term: mục hỏng kiểu "binh匪 và tặc" không được đem đi ép bản dịch
+    pairs = [(g.source, scrub_term(g.target)) for g in context.glossary if g.source and g.target]
+    pairs += [(c.source, scrub_term(c.target)) for c in context.characters if c.source and c.target]
     # thay cụm dài trước để tránh thay một phần
     return sorted(set(pairs), key=lambda p: len(p[0]), reverse=True)
 
@@ -234,7 +235,7 @@ def merge_update(context: ProjectContext, data: dict, video_name: str) -> list[s
         if existing is None:
             char = Character(
                 source=source,
-                target=str(raw.get("target") or "").strip(),
+                target=scrub_term(str(raw.get("target") or "").strip()),
                 gender=str(raw.get("gender") or "").strip(),
                 role=str(raw.get("role") or "").strip(),
                 addressing=str(raw.get("addressing") or "").strip(),
@@ -247,6 +248,8 @@ def merge_update(context: ProjectContext, data: dict, video_name: str) -> list[s
             updated = False
             for key in ("target", "gender", "role", "addressing"):
                 value = str(raw.get(key) or "").strip()
+                if key == "target":
+                    value = scrub_term(value)
                 if value and value != getattr(existing, key):
                     setattr(existing, key, value)
                     updated = True
@@ -258,7 +261,7 @@ def merge_update(context: ProjectContext, data: dict, video_name: str) -> list[s
         if not isinstance(raw, dict):
             continue
         source = str(raw.get("source") or "").strip()
-        target = str(raw.get("target") or "").strip()
+        target = scrub_term(str(raw.get("target") or "").strip())
         if not source or not target or source in by_source:
             continue
         existing = glossary.get(source)

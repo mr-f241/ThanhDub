@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ...context import extract_json, name_rule
-from ...langs import english_name
+from ...langs import count_cjk, english_name, has_cjk, is_cjk_lang, scrub_term
 from ...proc import StopRequested
 from .. import KeyRing, ProviderError, retry_delay
 from ...config import ProviderProfile
@@ -113,6 +113,20 @@ def needs_repair(source: str, target: str) -> bool:
     return is_repetitive(target) or is_too_long(source, target)
 
 
+def missing_glossary(source: str, target: str, pairs: list[tuple[str, str]]) -> list[str]:
+    """Thuật ngữ/nhân vật có trong nguồn nhưng bản dịch không dùng đúng bản đã chốt.
+
+    Trở ngại thật đã gặp: 修为 bị dịch "sửa chữa" thay vì "tu vi", 陈百生 ra pinyin
+    "Chen Bao Sinh" thay vì tên đã ấn trong ngữ cảnh — cả hai đều do model bỏ qua
+    khối GLOSSARY/CHARACTERS trong prompt.
+    """
+    return [
+        f"{src} → {want}"
+        for src, want in pairs
+        if src and want and src in source and want not in target
+    ]
+
+
 class LLMTranslator(Translator):
     uses_context = True
     max_batch = 80
@@ -164,6 +178,22 @@ class LLMTranslator(Translator):
             "1. <translation>\n2. <translation>\n…\n"
             "No extra text, no blank lines, no explanations."
         )
+        # Mệnh lệnh bắt buộc để CUỐI prompt: model nhỏ tuân thủ câu lệnh cuối tốt hơn
+        # rất nhiều so với khối GLOSSARY nằm trong system. Cảnh báo chữ Trung phải LUÔN có mặt
+        # (không chỉ khi lô có thuật ngữ) vì lỗi thật gặp là sót chữ Trung vào giữa câu ở đúng
+        # những dòng không có thuật ngữ nào — 陈百生 ra pinyin "Chen Bao Sinh" thì khoá ở đây.
+        prompt += (
+            "\n\nOUTPUT HYGIENE — mandatory: write every line completely in {target}, "
+            "never copy a Chinese word or phrase into the output, never write a name in pinyin, "
+            "never leave a line half-finished."
+        ).format(target=target)
+        terms = [(src, dst) for src, dst in job.glossary if any(src in text for text in lines)]
+        if terms:
+            prompt += (
+                "\nMANDATORY RENDERINGS — every line above must use these exact texts "
+                "(never translate them your own way, never write them in pinyin):\n"
+                + "\n".join(f'- "{src}" must appear as "{dst}"' for src, dst in terms)
+            )
         return system, prompt
 
     def translate(self, lines: list[str], job: TranslateJob) -> list[str]:
@@ -191,32 +221,66 @@ class LLMTranslator(Translator):
         job.emit(f"  chia nhỏ batch {len(lines)} → {middle} + {len(lines) - middle}")
         return self.translate(lines[:middle], job) + self.translate(lines[middle:], job)
 
+    def repair_reasons(self, source: str, target: str, job: TranslateJob) -> list[str]:
+        """Lý do phải dịch lại câu này — list rỗng nghĩa là bản dịch đạt.
+
+        Bắt đúng ba lỗi thật đã gặp trên phim: chết loop / dài lố, sót chữ Trung
+        vào bản dịch, và bỏ qua GLOSSARY/CHARACTERS (thuật ngữ, tên riêng).
+        """
+        reasons: list[str] = []
+        if needs_repair(source, target):
+            reasons.append("chết loop hoặc dài lố")
+        if not is_cjk_lang(job.target_lang):
+            if has_cjk(target):
+                reasons.append("còn sót chữ Trung")
+            reasons.extend(f"thuật ngữ {m}" for m in missing_glossary(source, target, job.glossary))
+        return reasons
+
     def _repair(self, lines: list[str], results: list[str], job: TranslateJob) -> list[str]:
-        """Câu chết loop / dịch dài lố → hỏi lại đúng các câu đó một lượt, giữ bản gọn hơn."""
+        """Câu hỏng → hỏi lại đúng các câu đó (tối đa 2 lượt), rồi quét dọn nốt phần sót.
+
+        Trận thật trên tap8: 4/56 câu vẫn mang chữ Trung sau khi hỏi lại một lượt — model
+        chày cối giữ nguyên hoặc bản hỏi lại còn dính lỗi mới nên bị loại. Sửa hai chỗ:
+        hỏi lại thêm một lượt nữa, và khi cả hai bản đều chưa đạt thì chọn bảnít chữ Trung
+        hơn thay vì chỉ so độ dài. Sau cùng gỡ hẳn chữ Trung còn sót (phụ đề Việt không đọc
+        được chữ Hán, TTS cũng đọc bậy).
+        """
         out = list(results)
-        hits = [i for i, (src, dst) in enumerate(zip(lines, out)) if needs_repair(src, dst)]
-        if not hits:
-            return out
-        job.emit(f"  {len(hits)} câu bị lặp vòng hoặc dài lố — dịch lại cho gọn")
-        system, prompt = self.build_prompts([lines[i] for i in hits], job)
-        prompt += (
-            "\nNOTE: the previous attempt at these lines either looped or came out far too long. "
-            "Compress the wording — cut filler, repetition and redundant clauses, keep every fact, "
-            "and make each result about as long as its own source line."
-        )
-        try:
-            raw = self._with_retry(
-                lambda key: self._call(system, prompt, key), attempts=max(2, len(self.keys)), job=job
+        for attempt in range(2):
+            hits = [i for i, (src, dst) in enumerate(zip(lines, out)) if self.repair_reasons(src, dst, job)]
+            if not hits:
+                break
+            job.emit(f"  {len(hits)} câu phải dịch lại (lần {attempt + 1}/2: loop/dài lố/sót chữ Trung/thuật ngữ)")
+            system, prompt = self.build_prompts([lines[i] for i in hits], job)
+            prompt += (
+                "\nNOTE: these lines came back wrong — they looped, came out far too long, still contain "
+                "untranslated Chinese characters, or ignored a GLOSSARY/CHARACTERS term above. "
+                "Fix all of that: use the exact GLOSSARY wording, drop the Chinese characters, "
+                "cut filler and redundant clauses, keep every fact, and make each result about as long "
+                "as its own source line."
             )
-        except ProviderError:
-            return out  # dịch vụ không trả được -> giữ nguyên bản cũ
-        parsed = parse_items(raw, len(hits))
-        if parsed is None:
-            return out
-        for index, text in zip(hits, parsed):
-            if not needs_repair(lines[index], text) or len(text) < len(out[index]):
-                out[index] = text
-        return out
+            try:
+                raw = self._with_retry(
+                    lambda key: self._call(system, prompt, key), attempts=max(2, len(self.keys)), job=job
+                )
+            except ProviderError:
+                break  # dịch vụ không trả được -> giữ nguyên bản cũ
+            parsed = parse_items(raw, len(hits))
+            if parsed is None:
+                break
+            for index, text in zip(hits, parsed):
+                out[index] = self._keep(lines[index], out[index], text, job)
+        return [text if is_cjk_lang(job.target_lang) else scrub_term(text) for text in out]
+
+    def _keep(self, source: str, old: str, new: str, job: TranslateJob) -> str:
+        """Giữa bản cũ và bản hỏi lại: bản đạt luôn thắng; cùng hỏng thì ít chữ Trung hơn, mới xét độ dài."""
+        old_bad = bool(self.repair_reasons(source, old, job))
+        new_bad = bool(self.repair_reasons(source, new, job))
+        if old_bad != new_bad:
+            return new if old_bad else old
+        if count_cjk(new) != count_cjk(old):
+            return new if count_cjk(new) < count_cjk(old) else old
+        return new if len(new) < len(old) else old
 
 
 def parse_items(raw: str, expected: int) -> list[str] | None:

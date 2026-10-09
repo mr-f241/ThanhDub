@@ -37,10 +37,17 @@ def translate_segments(
         return 0
     translator = make_translator(ctx, doc)
     context = ctx.store.load_context()
+    context_text = context_block(context, ctx.project.instructions) if translator.uses_context else ""
+    if translator.uses_context and not context_text:
+        # ngữ cảnh trống = prompt dịch không có tóm tắt/tên riêng/thuật ngữ → dịch trôi nổi
+        ctx.log(
+            "⚠ Ngữ cảnh project còn trống: bản dịch sẽ không có tóm tắt, tên riêng hay thuật ngữ. "
+            "Dịch vài câu rồi chạy 'Cập nhật ngữ cảnh' để các video sau đúng ngữ cảnh."
+        )
     job = TranslateJob(
         source_lang=doc.source_language or ctx.project.source_language,
         target_lang=ctx.project.target_language,
-        context_text=context_block(context, ctx.project.instructions) if translator.uses_context else "",
+        context_text=context_text,
         glossary=glossary_pairs(context),
         log=ctx.log,
         stop_event=ctx.stop_event,
@@ -73,6 +80,12 @@ def run_translate(ctx: RunContext, doc: VideoDoc, segments: list[Segment], only_
     ]
     if not targets:
         ctx.log("Không có câu nào cần dịch.")
+        if only_missing:
+            ctx.log(
+                "  → mọi câu đã có bản dịch. Muốn dịch lại với ngữ cảnh mới: bỏ tick "
+                "“Chỉ phần còn thiếu” ở trang project, hoặc chuột phải video → “Dịch lại toàn bộ”."
+            )
+        return
     translate_segments(ctx, doc, segments, targets, save)
 
 

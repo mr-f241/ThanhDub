@@ -18,6 +18,7 @@ from reviewtrans.core.context import (
     name_rule,
 )
 from reviewtrans.core.geometry import layer_rect, wrap_text
+from reviewtrans.core.langs import count_cjk, has_cjk, is_cjk_lang, scrub_term
 from reviewtrans.core.models import (
     Character,
     GlossaryEntry,
@@ -37,6 +38,7 @@ from reviewtrans.core.providers.translate.base import (
     TranslateJob,
     is_repetitive,
     is_too_long,
+    missing_glossary,
     needs_repair,
     parse_items,
 )
@@ -290,12 +292,111 @@ def test_translate_tu_sua_cau_chet_loop():
 
     fake = _fake_translator([f"1. {looped}", f"1. {fixed}"])
     assert fake.translate([src], job) == [fixed]
-    assert len(fake.prompts) == 2 and "Compress the wording" in fake.prompts[1]
+    assert len(fake.prompts) == 2 and "came back wrong" in fake.prompts[1]
 
     good = "Ta là tiểu công chúa Đại Chu Băng Tiên, được gả cho mã phu."
     clean = _fake_translator([f"1. {good}"])
     assert clean.translate([src], job) == [good]
     assert len(clean.prompts) == 1  # bản sạch -> không tốn thêm lượt gọi
+
+
+def test_phat_hien_sot_chu_trung_va_bo_glossary():
+    """Sót chữ Trung hoặc bỏ glossary → bắt dịch lại đúng câu đó; bản sạch thì tốn 1 lượt gọi."""
+    src = "也忘记了自己的修为"
+    good = "cũng quên luôn tu vi của mình"
+    job = TranslateJob(source_lang="zh", target_lang="vi", glossary=[("修为", "tu vi")])
+
+    assert has_cjk("cũng quên tu vi, 修为 nè") and not has_cjk(good)
+    assert is_cjk_lang("zh") and is_cjk_lang("zh-Hant") and not is_cjk_lang("vi")
+    assert missing_glossary(src, "cũng quên sửa chữa của mình", job.glossary) == ["修为 → tu vi"]
+    assert missing_glossary(src, good, job.glossary) == []
+
+    # bỏ glossary (修为 → "sửa chữa") -> bị bắt dịch lại và hỏi lại đúng 1 lượt
+    wrong = _fake_translator(["1. cũng quên sửa chữa của mình", f"1. {good}"])
+    assert wrong.translate([src], job) == [good]
+    assert len(wrong.prompts) == 2 and "GLOSSARY wording" in wrong.prompts[1]
+
+    # sót chữ Trung trong bản dịch tiếng Việt -> cũng bị bắt
+    leak = _fake_translator(["1. cũng quên tu vi, 修为 nè", f"1. {good}"])
+    assert leak.translate([src], job) == [good]
+    assert len(leak.prompts) == 2
+
+    # bản sạch -> không tốn thêm lượt gọi
+    clean = _fake_translator([f"1. {good}"])
+    assert clean.translate([src], job) == [good]
+    assert len(clean.prompts) == 1
+
+    # mục tiêu là tiếng Trung thì có CJK là bình thường, không bị bắt oan
+    zh_job = TranslateJob(source_lang="zh", target_lang="zh", glossary=[("修为", "修为")])
+    zh = _fake_translator(["1. 忘了自己的修为"])
+    assert zh.translate([src], zh_job) == ["忘了自己的修为"]
+    assert len(zh.prompts) == 1
+
+
+def test_prompt_bat_buoc_thuat_ngu_o_cuoi():
+    """GLOSSARY nằm trong system bị model nhỏ bỏ qua (陈百生 → pinyin) → thêm mệnh lệnh ở cuối prompt."""
+    job = TranslateJob(
+        source_lang="zh", target_lang="vi",
+        glossary=[("陈百生", "Trần Bách Sinh"), ("修为", "tu vi"), ("卡", "thẻ")],
+    )
+    _system, prompt = _fake_translator([]).build_prompts(["陈百生也忘记了自己的修为"], job)
+    assert "MANDATORY RENDERINGS" in prompt
+    assert '"陈百生" must appear as "Trần Bách Sinh"' in prompt
+    assert '"修为" must appear as "tu vi"' in prompt
+    assert '"卡"' not in prompt  # thuật ngữ không dính lô này → không thêm cho nặng prompt
+    # mệnh lệnh bắt buộc nằm SAU câu lệnh định dạng output
+    assert prompt.index("No extra text") < prompt.index("MANDATORY RENDERINGS")
+
+    _system2, prompt2 = _fake_translator([]).build_prompts(["今天天气不错"], job)
+    assert "MANDATORY RENDERINGS" not in prompt2  # không có thuật ngữ trong lô → không thêm cho nặng prompt
+    # nhưng cảnh báo chữ Trung phải LUÔN có mặt: chính các câu không có thuật ngữ mới hay bị sót
+    assert "OUTPUT HYGIENE" in prompt and "OUTPUT HYGIENE" in prompt2
+    assert "Chinese" in prompt2 and prompt2.index("No extra text") < prompt2.index("OUTPUT HYGIENE")
+
+
+def test_hoi_lai_hai_luot_va_quet_chu_trung_cuoi_cung():
+    """Model chày cối giữ chữ Trung qua 2 lượt hỏi lại → cuối cùng vẫn phải hết chữ Hán."""
+    src = "在这十年的战争下来，两国之间已经忘记原来的开战目的，现在依旧开打"
+    main = "Sau mười năm chiến tranh, hai nước đã quên mất mục đích开战 ban đầu"
+    worse = "Sau mười năm chiến tranh, hai nước đã quên mất mục đích开战 ban đầu, giờ vẫn đánh nhau và còn nhiều chuyện khác nữa都是战争遗留问题"
+    longer = "Sau mười năm chiến tranh, hai nước đã quên mất mục đích开战 ban đầu của cuộc chiến, giờ vẫn tiếp tục đánh nhau"
+    job = TranslateJob(source_lang="zh", target_lang="vi")
+
+    stubborn = _fake_translator([f"1. {main}", f"1. {worse}", f"1. {longer}"])
+    out = stubborn.translate([src], job)
+    assert len(stubborn.prompts) == 3  # 1 lượt chính + 2 lượt hỏi lại
+    assert not has_cjk(out[0])  # chữ Trung phải hết, kể cả khi model không tự sửa được
+    assert out[0] == "Sau mười năm chiến tranh, hai nước đã quên mất mục đích ban đầu"
+    assert count_cjk(main) == 2 and count_cjk(worse) > count_cjk(main)
+
+    # bản hỏi lại sạch thì dừng ngay ở lượt đầu, không tốn lượt thứ hai
+    clean = _fake_translator([f"1. {main}", "1. Sau mười năm chiến tranh, hai nước đã quên mục đích ban đầu"])
+    out2 = clean.translate([src], job)
+    assert len(clean.prompts) == 2
+    assert not has_cjk(out2[0])
+
+    # mục tiêu là chữ Trung thì không được gỡ (chữ Hán là bản dịch hợp lệ)
+    zh_job = TranslateJob(source_lang="zh", target_lang="zh")
+    zh = _fake_translator(["1. 忘记开战目的"])
+    assert zh.translate([src], zh_job) == ["忘记开战目的"]
+    assert len(zh.prompts) == 1
+
+
+def test_scrub_term_gon_chu_trung_trong_thuat_ngu():
+    """LLM từng lưu glossary '兵匪 → binh匪 và tặc' — mục hỏng đó phải được gỡ ra mọi nơi."""
+    assert scrub_term("binh匪 và tặc") == "binh và tặc"
+    assert scrub_term("nước京 Kinh") == "nước Kinh"
+    assert scrub_term("水行") == "水行"  # target thuần chữ Trung → giữ nguyên
+    assert scrub_term("tu vi") == "tu vi"
+    assert scrub_term("") == ""
+
+    context = ProjectContext()
+    merge_update(context, {"glossary": [{"source": "兵匪", "target": "binh匪 và tặc"}]}, "T1")
+    assert context.glossary[0].target == "binh và tặc"
+    # mục đã hỏng từ file cũ vẫn được lọc khi dựng prompt và khi kiểm bản dịch
+    context.glossary.append(GlossaryEntry(source="京、变（国号）", target="nước京 Kinh"))
+    assert "nước京" not in context_block(context)  # nguồn giữ nguyên, bản dịch thì gỡ chữ Trung
+    assert ("京、变（国号）", "nước Kinh") in glossary_pairs(context)
 
 
 def test_plan_clips_fit_and_gap():

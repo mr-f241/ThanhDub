@@ -121,7 +121,8 @@ def test_translate_and_context_update(tmp_path, home, monkeypatch):
     pipeline = VideoPipeline(ctx, doc.id)
     pipeline.run(["translate", "context"])
     saved = ctx.store.load_segments(doc.id)
-    assert saved[0].text == "VI:句子1"
+    # FakeLLM cố tình trả "VI:句子1" — chữ Trung còn sót trong bản dịch phải bị gỡ ra
+    assert saved[0].text == "VI: 1"
     assert saved[2].text == ""  # câu bị khoá không dịch
     context = ctx.store.load_context()
     assert context.characters[0].target == "Lâm Phàm"
